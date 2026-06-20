@@ -17,17 +17,18 @@ The roadmap below describes the complete product. Each milestone item is marked 
 - Milestone 7: complete
 - Milestone 8: pending
 
-### Pending production work
+### Production readiness outside Milestone 8
 
 - [x] Resolve and inject actual scalar values using documented task/sandbox/overlay/environment/provider/default precedence
 - [x] Fetch provider secret payloads for implemented adapters without persisting them in workflow metadata
-- [ ] Materialize file-secret payloads atomically, validate formats/policies, set permissions, and manage mount lifecycle — partial: atomic writes, JSON validation, mount-root confinement, and `0600` permissions are implemented; policy and lifecycle cleanup remain
+- [x] Materialize file-secret payloads atomically, validate shape/size/mode policies, set permissions, track manifests, and safely unmount files
 - [x] Expand scanner parsing for Kubernetes, Helm, Terraform outputs, cloud outputs, and CI matrices beyond evidence detection
-- [ ] Add service-output schemas — renewable leases, replica policy enforcement, tombstones, and scoped dependent action queues are implemented
+- [x] Add typed service-output schemas and enforce them before publication
 - [x] Add complete provenance to every resolved value and value-aware environment diffs
 - [x] Add Vault, AWS Secrets Manager, Kubernetes Secrets, Cloudflare secrets, and encrypted-local provider adapters
-- [ ] Add reviewer enforcement, public-secret leak detection, audit export, and CI status checks — low-confidence and production-impacting mapping approval policies are implemented
-- [ ] Add integration/end-to-end tests against provider emulators or dedicated test projects
+- [x] Add integration/end-to-end tests against local provider CLI emulators
+
+All identified non-governance production-readiness items are complete. Reviewer enforcement, public-secret leak policy, audit export, and CI status checks remain exclusively in Milestone 8.
 
 ## Scope
 
@@ -128,14 +129,16 @@ Agent Vars should manage:
 ## First usable workflow
 
 ```bash
-agent-vars scan
-agent-vars suggest --provider gcp-dev
+agent-vars scan --discover --repo . --out agent-vars.yaml
+# review the generated contract and add provider profiles
+agent-vars resources --environment dev
+agent-vars suggest --environment dev
 agent-vars approve
-agent-vars sync --provider gcp-dev
-agent-vars validate --environment dev --overlay preview
+agent-vars sync --environment dev
+agent-vars validate --environment dev --overlay preview --service frontend --phase build
 agent-vars materialize frontend --environment dev --overlay preview
 agent-vars materialize api-gateway --environment dev --overlay preview
-agent-vars publish service.api-gateway.url https://api-gateway-abc123.example.dev
+agent-vars publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --service api-gateway
 agent-vars doctor frontend --environment dev --overlay preview
 ```
 

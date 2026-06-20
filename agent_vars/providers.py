@@ -62,7 +62,7 @@ def get_secret(provider_name: str, provider: dict[str, Any], secret_name: str) -
         if not project:
             raise ProviderError(f"gcp provider {provider_name} missing project_id")
         result = subprocess.run(
-            ["gcloud", "secrets", "versions", "access", "latest", "--secret", secret_name, "--project", str(project)],
+            [str(provider.get("executable", "gcloud")), "secrets", "versions", "access", "latest", "--secret", secret_name, "--project", str(project)],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -173,7 +173,7 @@ def _list_gcp(provider_name: str, provider: dict[str, Any]) -> list[ProviderSecr
         project = provider.get("project_id")
         if not project:
             raise ProviderError(f"gcp provider {provider_name} missing project_id")
-        result = subprocess.run(["gcloud", "secrets", "list", "--project", str(project), "--format=json"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        result = subprocess.run([str(provider.get("executable", "gcloud")), "secrets", "list", "--project", str(project), "--format=json"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         if result.returncode != 0:
             raise ProviderError(result.stderr.strip() or "gcloud secrets list failed")
         names = [item.get("name", "").split("/")[-1] for item in json.loads(result.stdout)]
@@ -232,7 +232,7 @@ def _list_local_encrypted(provider_name: str, provider: dict[str, Any]) -> list[
 
 
 def _download_doppler(provider: dict[str, Any]) -> dict[str, Any]:
-    args = ["doppler", "secrets", "download", "--no-file", "--format=json"]
+    args = [str(provider.get("executable", "doppler")), "secrets", "download", "--no-file", "--format=json"]
     if provider.get("project"):
         args += ["--project", str(provider["project"])]
     if provider.get("config"):

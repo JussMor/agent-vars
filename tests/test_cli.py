@@ -88,9 +88,9 @@ def test_trace_and_events_redact_values_by_default(tmp_path, monkeypatch, capsys
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_VARS_REGISTRY", str(tmp_path / "registry.json"))
     scope = ["--environment", "dev", "--overlay", "preview", "--sandbox", "s1", "--task", "t1"]
-    assert main(["--contract", str(EXAMPLE), "publish", "service.api.url", "https://secret", *scope, "--service", "api", "--instance", "api.1"]) == 0
+    assert main(["--contract", str(EXAMPLE), "publish", "service.api-gateway.primary.url", "https://secret", *scope, "--service", "api-gateway", "--instance", "api.1"]) == 0
     capsys.readouterr()
-    assert main(["--contract", str(EXAMPLE), "trace", "service.api.url", *scope]) == 0
+    assert main(["--contract", str(EXAMPLE), "trace", "service.api-gateway.primary.url", *scope]) == 0
     assert json.loads(capsys.readouterr().out)["value"] == "<redacted>"
     assert main(["--contract", str(EXAMPLE), "events", *scope, "--type", "publish"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["value"] == "<redacted>"
@@ -110,3 +110,23 @@ def test_diff_compares_values_without_revealing_them(tmp_path, monkeypatch, caps
     result = json.loads(output)
     assert next(item for item in result["values"] if item["name"] == "NATS_URL")["value_changed"] is True
     assert "nats://left" not in output
+
+
+def test_materialize_and_unmount_file_secret_lifecycle(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    values = tmp_path / "values.json"
+    values.write_text('{"environment_value":{"NATS_URL":"nats://dev","REDIS_URL":"redis://dev"}}', encoding="utf-8")
+    file_values = tmp_path / "files.json"
+    file_values.write_text('{"gcp_service_account":{"type":"service_account","project_id":"test"}}', encoding="utf-8")
+    mount_root = tmp_path / "mounts"
+    assert main([
+        "--contract", str(EXAMPLE), "materialize", "api-gateway", "--environment", "dev", "--overlay", "preview",
+        "--values", str(values), "--file-values", str(file_values), "--mount-root", str(mount_root), "--strict",
+    ]) == 0
+    capsys.readouterr()
+    mounted = mount_root / "app/gcp-credentials/service-account.json"
+    assert mounted.exists()
+    assert main(["--contract", str(EXAMPLE), "unmount", "api-gateway", "--mount-root", str(mount_root)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["removed"] == [str(mounted)]
+    assert not mounted.exists()

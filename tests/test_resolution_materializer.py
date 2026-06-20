@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_vars.contract import load_contract, materialize_service
-from agent_vars.materializer import materialize_file_secrets
+from agent_vars.materializer import cleanup_file_secrets, materialize_file_secrets
 from agent_vars.registry import Registry
 from agent_vars.resolution import missing_required, resolve_service
 
@@ -128,6 +128,44 @@ def test_materializer_rejects_invalid_json(tmp_path):
             mount_root=tmp_path,
             payloads={"gcp_service_account": "not-json"},
         )
+
+
+def test_materializer_enforces_json_shape_and_size_policies(tmp_path):
+    contract = load_contract(EXAMPLE)
+    with pytest.raises(ValueError, match="required JSON keys"):
+        materialize_file_secrets(contract, "api-gateway", environment="dev", mount_root=tmp_path, payloads={"gcp_service_account": {"type": "service_account"}})
+    contract["files"]["gcp_service_account"]["policy"]["max_bytes"] = 2
+    with pytest.raises(ValueError, match="max_bytes"):
+        materialize_file_secrets(contract, "api-gateway", environment="dev", mount_root=tmp_path, payloads={"gcp_service_account": {"type": "service_account", "project_id": "test"}})
+
+
+def test_mount_manifest_supports_safe_lifecycle_cleanup(tmp_path):
+    contract = load_contract(EXAMPLE)
+    manifest = tmp_path / ".mounts.json"
+    written = materialize_file_secrets(
+        contract, "api-gateway", environment="dev", mount_root=tmp_path,
+        payloads={"gcp_service_account": {"type": "service_account", "project_id": "test"}},
+        manifest_path=manifest,
+    )
+    assert manifest.exists()
+    removed = cleanup_file_secrets(tmp_path, manifest, service_name="api-gateway")
+    assert removed == written
+    assert not written[0].exists()
+    assert not manifest.exists()
+
+
+def test_cleanup_refuses_to_delete_modified_mount_without_force(tmp_path):
+    contract = load_contract(EXAMPLE)
+    manifest = tmp_path / ".mounts.json"
+    target = materialize_file_secrets(
+        contract, "api-gateway", environment="dev", mount_root=tmp_path,
+        payloads={"gcp_service_account": {"type": "service_account", "project_id": "test"}},
+        manifest_path=manifest,
+    )[0]
+    target.write_text("modified", encoding="utf-8")
+    with pytest.raises(ValueError, match="refusing to remove modified"):
+        cleanup_file_secrets(tmp_path, manifest)
+    assert cleanup_file_secrets(tmp_path, manifest, force=True) == [target]
 
 
 def test_rendered_env_uses_resolved_scalar_values(tmp_path, monkeypatch):

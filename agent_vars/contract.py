@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import json
+import re
 import subprocess
 
 
@@ -12,6 +13,7 @@ class ContractError(ValueError):
 
 
 PROVIDER_KINDS = {"gcp", "cloudflare", "doppler", "vault", "aws", "kubernetes", "local", "local-encrypted"}
+OUTPUT_TYPES = {"string", "url", "integer", "number", "boolean", "json"}
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,17 @@ def validate_contract(contract: dict[str, Any], *, environment: str | None = Non
             mount = item.get("mount")
             if not isinstance(mount, dict) or not isinstance(mount.get("path"), str) or not mount.get("path"):
                 issues.append(ValidationIssue("error", f"{file_path}.mount.path", "mount path is required"))
+            policy = item.get("policy", {})
+            if not isinstance(policy, dict):
+                issues.append(ValidationIssue("error", f"{file_path}.policy", "policy must be a mapping"))
+            else:
+                if policy.get("mode", "0600") not in {"0400", "0600"}:
+                    issues.append(ValidationIssue("error", f"{file_path}.policy.mode", "mode must be 0400 or 0600", "use a private owner-only file mode"))
+                if policy.get("max_bytes") is not None and (not isinstance(policy["max_bytes"], int) or policy["max_bytes"] <= 0):
+                    issues.append(ValidationIssue("error", f"{file_path}.policy.max_bytes", "max_bytes must be a positive integer"))
+                required_keys = policy.get("required_json_keys", [])
+                if not isinstance(required_keys, list) or not all(isinstance(key, str) for key in required_keys):
+                    issues.append(ValidationIssue("error", f"{file_path}.policy.required_json_keys", "required_json_keys must be a list of strings"))
 
     runtime_outputs = _collect_outputs(contract.get("runtime_dependencies", {}), "runtime")
     file_outputs = _collect_file_outputs(contract.get("files", {}))
@@ -112,6 +125,30 @@ def validate_contract(contract: dict[str, Any], *, environment: str | None = Non
                 issues.append(ValidationIssue("error", path, "service must be a mapping"))
                 continue
             _require(service, "root", str, issues, path)
+            outputs = service.get("outputs", {})
+            if not isinstance(outputs, dict):
+                issues.append(ValidationIssue("error", f"{path}.outputs", "outputs must be a mapping"))
+            else:
+                for output_name, output in outputs.items():
+                    output_path = f"{path}.outputs.{output_name}"
+                    if not isinstance(output, dict):
+                        issues.append(ValidationIssue("error", output_path, "output schema must be a mapping"))
+                        continue
+                    if output.get("type", "string") not in OUTPUT_TYPES:
+                        issues.append(ValidationIssue("error", f"{output_path}.type", "unsupported output type", f"choose one of {', '.join(sorted(OUTPUT_TYPES))}"))
+                    if output.get("phase", "runtime") not in {"setup", "build", "runtime", "hot"}:
+                        issues.append(ValidationIssue("error", f"{output_path}.phase", "phase must be setup, build, runtime, or hot"))
+                    if output.get("visibility", "internal") not in {"secret", "file-secret", "public", "internal"}:
+                        issues.append(ValidationIssue("error", f"{output_path}.visibility", "visibility must be secret, file-secret, public, or internal"))
+                    if output.get("enum") is not None and not isinstance(output["enum"], list):
+                        issues.append(ValidationIssue("error", f"{output_path}.enum", "enum must be a list"))
+                    if output.get("max_length") is not None and (not isinstance(output["max_length"], int) or output["max_length"] <= 0):
+                        issues.append(ValidationIssue("error", f"{output_path}.max_length", "max_length must be a positive integer"))
+                    if output.get("pattern") is not None:
+                        try:
+                            re.compile(str(output["pattern"]))
+                        except re.error:
+                            issues.append(ValidationIssue("error", f"{output_path}.pattern", "pattern must be a valid regular expression"))
             requires = service.get("requires", [])
             if not isinstance(requires, list):
                 issues.append(ValidationIssue("error", f"{path}.requires", "requires must be a list"))
