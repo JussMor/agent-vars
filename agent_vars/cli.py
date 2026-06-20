@@ -11,7 +11,8 @@ from .providers import list_secrets, suggest_bindings
 from .registry import Registry, refresh_actions
 from .resolution import missing_required, resolve_service
 from .scanner import scan_repo, scan_workspace
-from .materializer import materialize_file_secrets
+from .materializer import cleanup_file_secrets, materialize_file_secrets
+from .outputs import validate_service_output
 from .workflow import DEFAULT_STATE_DIR, approve_suggestions, sync_provider_metadata, write_state
 
 
@@ -47,6 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--strict", action="store_true", help="Fail when a required value is unresolved")
     materialize.add_argument("--file-values", help="JSON object of file-secret payloads, intended for tests/local automation")
     materialize.add_argument("--mount-root", help="Materialize declared file mounts beneath this root")
+    materialize.add_argument("--mount-manifest", help="Mount lifecycle manifest; defaults beneath --mount-root")
+
+    unmount = sub.add_parser("unmount", help="Remove tracked file-secret mounts safely")
+    unmount.add_argument("service", nargs="?", help="Only remove mounts for this service")
+    unmount.add_argument("--mount-root", required=True)
+    unmount.add_argument("--mount-manifest", help="Mount lifecycle manifest; defaults beneath --mount-root")
+    unmount.add_argument("--force", action="store_true", help="Remove files even when their content changed")
 
     suggest = sub.add_parser("suggest", help="Suggest provider bindings for required variables")
     suggest_source = suggest.add_mutually_exclusive_group(required=True)
@@ -239,12 +247,20 @@ def main(argv: list[str] | None = None) -> int:
                     environment=args.environment,
                     mount_root=Path(args.mount_root),
                     payloads=_read_json(args.file_values),
+                    manifest_path=Path(args.mount_manifest) if args.mount_manifest else Path(args.mount_root) / ".agent-vars-mounts.json",
                 )
             rendered = materialize_service(contract, args.service, resolved)
             if args.out and not args.dry_run:
                 Path(args.out).write_text(rendered, encoding="utf-8")
             else:
                 sys.stdout.write(rendered)
+            return 0
+
+        if args.command == "unmount":
+            mount_root = Path(args.mount_root)
+            manifest = Path(args.mount_manifest) if args.mount_manifest else mount_root / ".agent-vars-mounts.json"
+            removed = cleanup_file_secrets(mount_root, manifest, service_name=args.service, force=args.force)
+            sys.stdout.write(as_json({"removed": [str(path) for path in removed]}))
             return 0
 
         if args.command == "suggest":
@@ -272,9 +288,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "publish":
+            output_schema = validate_service_output(contract, args.service, args.key, args.value, slot=args.slot)
             replica_limit = args.max_replicas if args.max_replicas is not None else _replica_limit(contract, args.service)
             actions = refresh_actions(contract, args.key, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task)
-            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover, max_replicas=replica_limit, actions=actions, source=args.source, provider=args.provider, phase=args.phase)
+            phase = str(output_schema.get("phase", args.phase)) if output_schema else args.phase
+            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover, max_replicas=replica_limit, actions=actions, source=args.source, provider=args.provider, phase=phase)
             sys.stdout.write(as_json(event.__dict__))
             return 0
 

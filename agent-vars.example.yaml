@@ -95,6 +95,12 @@ files:
     mount:
       path: /app/gcp-credentials/service-account.json
       env: GOOGLE_APPLICATION_CREDENTIALS
+    policy:
+      mode: "0600"
+      max_bytes: 65536
+      required_json_keys:
+        - type
+        - project_id
 
 services:
   frontend:
@@ -126,6 +132,11 @@ services:
     env_files:
       - api-gateway/.env
       - api-gateway/.env.preview
+    outputs:
+      url:
+        type: url
+        phase: runtime
+        visibility: public
     requires:
       - name: NATS_URL
         source: runtime.nats.url
@@ -151,6 +162,11 @@ services:
       lease_ttl_seconds: 60
     env_files:
       - api-gateway-mobile/.env
+    outputs:
+      url:
+        type: url
+        phase: runtime
+        visibility: public
     requires:
       - name: NATS_URL
         source: runtime.nats.url

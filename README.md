@@ -29,6 +29,20 @@ The expensive failure is not only that a secret is missing. The expensive failur
 6. **Instances need identity**: dynamic outputs must be published by unique instances with leases so duplicate processes do not silently overwrite each other.
 7. **File secrets are first-class**: JSON credentials and config files should be mounted and validated as files when SDKs expect files.
 
+## Implementation status
+
+Milestones 1–7 in [PLAN.md](PLAN.md) are implemented and tested:
+
+- enterprise contract schema, overlays, phases, visibility, and typed service outputs
+- single-repository and multi-repository discovery with code, CI, Compose, Kubernetes, Helm, Terraform, and credential-path evidence
+- structural and resolved-value validation with actionable diagnostics
+- scalar `.env` rendering plus policy-constrained, tracked file-secret mounts and safe unmount lifecycle
+- scoped runtime registry with leases, replicas, TTL cleanup, tombstones, and dependency action queues
+- redacted provenance, `doctor`, `trace`, `events`, and value-safe `diff`
+- GCP, Cloudflare metadata, Doppler, Vault, AWS, Kubernetes, plaintext local, and age-encrypted local providers
+
+Milestone 8 governance—reviewer enforcement, public-secret leak policy, audit export, and CI status checks—is intentionally still pending. It is tracked separately and is not implied by the current CLI.
+
 ## Core model
 
 Agent Vars treats configuration as a graph:
@@ -130,6 +144,10 @@ files:
     mount:
       path: /app/gcp-credentials/service-account.json
       env: GOOGLE_APPLICATION_CREDENTIALS
+    policy:
+      mode: "0600"
+      max_bytes: 65536
+      required_json_keys: [type, project_id]
 
 services:
   frontend:
@@ -161,6 +179,11 @@ services:
     env_files:
       - api-gateway/.env
       - api-gateway/.env.preview
+    outputs:
+      url:
+        type: url
+        phase: runtime
+        visibility: public
     requires:
       - name: NATS_URL
         source: runtime.nats.url
@@ -248,11 +271,13 @@ A human should not maintain this entire contract by hand. In enterprise repos, v
 The intended workflow is:
 
 ```bash
-agent-vars scan
-agent-vars suggest
+agent-vars scan --discover --repo . --out agent-vars.yaml
+# Review the draft and add provider profiles.
+agent-vars resources --environment dev
+agent-vars suggest --environment dev
 agent-vars approve
-agent-vars sync --provider gcp-dev
-agent-vars validate --environment dev --overlay preview
+agent-vars sync --environment dev
+agent-vars validate --environment dev --overlay preview --service frontend --phase build
 ```
 
 Agent Vars should keep the contract synchronized from evidence in the repo and connected providers:
@@ -353,11 +378,12 @@ Use layered resolution instead of overwriting provider values:
 When a value such as `service.api-gateway.primary.url` is generated for a user sandbox, Agent Vars should publish it only to the scoped runtime registry:
 
 ```bash
-agent-vars publish service.api-gateway.url https://api-gateway-alice-abc123.example.dev \
+agent-vars --contract agent-vars.example.yaml publish service.api-gateway.primary.url https://api-gateway-alice-abc123.example.dev \
   --environment dev \
   --overlay preview \
   --sandbox codex-workspace-abc123 \
   --task task-789 \
+  --service api-gateway \
   --ttl 2h
 ```
 
@@ -435,9 +461,9 @@ Useful commands:
 
 ```bash
 agent-vars doctor api-gateway --environment dev --overlay preview
-agent-vars trace VITE_BASE_API_URL --service frontend --environment dev --overlay preview
-agent-vars events --sandbox codex-workspace-abc123
-agent-vars diff qa prod --service api-gateway
+agent-vars trace service.api-gateway.primary.url --environment dev --overlay preview --sandbox codex-workspace-abc123
+agent-vars events --sandbox codex-workspace-abc123 --type publish
+agent-vars diff qa prod --service api-gateway --left-values qa-values.json --right-values prod-values.json
 ```
 
 ## Duplicate instances and leases
@@ -476,21 +502,24 @@ agent-vars cleanup --environment dev --sandbox codex-workspace-abc123 --task tas
 
 Replica publications use `--slot replica` and are checked against the service's `instance_policy.replicas`; `--max-replicas` is available as an explicit runtime override. Publications queue dependency actions from requirement phase: `build` becomes `rebuild`, `hot` becomes `hot-refresh`, and setup/runtime become `restart`. Every queued action carries the exact environment, overlay, sandbox, and task scope and remains available until its publication index is acknowledged. Expiry marks outputs stale, removes scoped payloads, and retains value-free audit tombstones.
 
-## Initial product workflow
+Every publication requires a declared publisher service and a key shaped as `service.<service>.<primary|replica>.<output>`. The output must be declared under `services.<service>.outputs`; supported schema types are `string`, `url`, `integer`, `number`, `boolean`, and `json`, with optional enum, regex, and length constraints.
+
+## CLI quickstart
 
 ```bash
-agent-vars scan
-agent-vars suggest --provider gcp-dev
+agent-vars scan --discover --repo . --out agent-vars.yaml
+# Review the generated contract and add provider profiles before continuing.
+agent-vars resources --environment dev
+agent-vars suggest --environment dev
 agent-vars approve
-agent-vars sync --provider gcp-dev
-agent-vars validate --environment dev --overlay preview
-agent-vars materialize frontend --environment dev --overlay preview
-agent-vars materialize api-gateway --environment dev --overlay preview
-agent-vars publish service.api-gateway.url https://api-gateway-abc123.example.dev
-agent-vars doctor frontend --environment dev --overlay preview
+agent-vars sync --environment dev
+agent-vars validate --environment dev --overlay preview --service api-gateway --phase runtime
+agent-vars materialize api-gateway --environment dev --overlay preview --strict --mount-root .agent-vars/mounts
+agent-vars publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --sandbox workspace-123 --service api-gateway
+agent-vars doctor frontend --environment dev --overlay preview --sandbox workspace-123
 ```
 
-## What this enables
+## Implemented capabilities
 
 - show every required env var across an enterprise repo
 - generate service-specific `.env` files from one reviewed contract
@@ -499,15 +528,20 @@ agent-vars doctor frontend --environment dev --overlay preview
 - track env errors to service, source, provider, phase, sandbox, and instance
 - detect stale or conflicting values before build/runtime
 - support existing cloud secret managers instead of replacing them
+- validate typed dynamic outputs before publication
+- track and safely remove mounted file-secret payloads
 
-## Coding-phase CLI
+## Installation and core commands
 
-This repository now includes an initial Python implementation of the `agent-vars` command. It focuses on the first usable coding phase from the plan: loading the repository contract, validating declared environments and overlays, checking service requirements against runtime/file/service sources, summarizing discovered contract shape, and rendering service-specific `.env` output without embedding file-secret contents.
+Agent Vars is an installable Python CLI for scanning, validating, resolving, materializing, publishing, and debugging repository configuration.
 
 ```bash
-python -m agent_vars.cli --contract agent-vars.example.yaml scan
-python -m agent_vars.cli --contract agent-vars.example.yaml validate --environment dev --overlay preview
-python -m agent_vars.cli --contract agent-vars.example.yaml materialize api-gateway --dry-run
+python3 -m venv .venv
+.venv/bin/pip install -e .
+
+.venv/bin/agent-vars --contract agent-vars.example.yaml scan
+.venv/bin/agent-vars --contract agent-vars.example.yaml validate --environment dev --overlay preview
+.venv/bin/agent-vars --contract agent-vars.example.yaml materialize api-gateway --dry-run
 ```
 
 The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
@@ -536,15 +570,20 @@ The values file uses the documented precedence layers. Values may be global or n
 }
 ```
 
-File secrets can be fetched from the environment's provider profile or supplied through `--file-values` for local automation. Declared absolute paths are mapped beneath `--mount-root`, confined to that root, written atomically, validated as JSON when declared, and assigned `0600` permissions:
+File secrets can be fetched from the environment's provider profile or supplied through `--file-values` for local automation. Declared absolute paths are mapped beneath `--mount-root`, confined to that root, written atomically, checked against size/JSON-shape policies, and assigned owner-only `0400` or `0600` permissions:
 
 ```bash
 agent-vars --contract agent-vars.example.yaml materialize api-gateway \
   --environment dev --overlay preview --values values.json --strict \
   --file-values file-values.json --mount-root .agent-vars/mounts --out .agent-vars/api-gateway.env
+
+agent-vars --contract agent-vars.example.yaml unmount api-gateway \
+  --mount-root .agent-vars/mounts
 ```
 
-Install the CLI and development dependencies with:
+Mount manifests contain paths, hashes, sizes, modes, service/environment scope, and timestamps—but never secret payloads. Unmount refuses to delete a modified file unless `--force` is explicit.
+
+Install development dependencies and run all unit and provider-emulator integration tests with:
 
 ```bash
 python3 -m venv .venv
@@ -552,7 +591,7 @@ python3 -m venv .venv
 .venv/bin/pytest -q
 ```
 
-## Provider suggestions and runtime registry
+## Provider adapters and guided mapping
 
 The implementation includes provider-guided suggestions and a scoped runtime registry for preview values. Provider kinds are `gcp`, `cloudflare`, `doppler`, `vault`, `aws`, `kubernetes`, `local`, and `local-encrypted`. Cloudflare supports metadata discovery only because deployed Worker secret payloads are write-only.
 
@@ -583,11 +622,11 @@ agent-vars --contract agent-vars.example.yaml resources --environment dev
 agent-vars --contract agent-vars.example.yaml suggest --environment dev
 agent-vars --contract agent-vars.example.yaml approve
 agent-vars --contract agent-vars.example.yaml sync --provider gcp-dev
-agent-vars publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789 --service api-gateway --ttl 2h
-agent-vars trace service.api-gateway.primary.url --environment dev --overlay preview --sandbox codex-workspace-abc123
-agent-vars events --sandbox codex-workspace-abc123 --type publish
-agent-vars doctor frontend --environment dev --overlay preview
-agent-vars diff qa prod --service api-gateway --left-values qa-values.json --right-values prod-values.json
+agent-vars --contract agent-vars.example.yaml publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789 --service api-gateway --ttl 2h
+agent-vars --contract agent-vars.example.yaml trace service.api-gateway.primary.url --environment dev --overlay preview --sandbox codex-workspace-abc123
+agent-vars --contract agent-vars.example.yaml events --sandbox codex-workspace-abc123 --type publish
+agent-vars --contract agent-vars.example.yaml doctor frontend --environment dev --overlay preview
+agent-vars --contract agent-vars.example.yaml diff qa prod --service api-gateway --left-values qa-values.json --right-values prod-values.json
 ```
 
 Provider adapters use their standard CLIs: `gcloud`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
@@ -598,4 +637,4 @@ Suggestions are written to `.agent-vars/suggestions.json` with confidence, evide
 
 Publishing a second primary instance in the same scope fails while the first lease is active. Use `--takeover` only when replacing that primary is intentional.
 
-The complete product roadmap and remaining production work are tracked in [PLAN.md](PLAN.md). The current implementation is a tested foundation, not yet a production secret delivery or governance system.
+The complete roadmap and the explicit Milestone 8 governance boundary are tracked in [PLAN.md](PLAN.md).
