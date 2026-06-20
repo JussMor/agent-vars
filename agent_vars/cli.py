@@ -8,6 +8,7 @@ from .contract import as_json, contract_summary, load_contract, materialize_serv
 from .providers import list_secrets, suggest_bindings
 from .registry import Registry
 from .scanner import scan_repo
+from .workflow import DEFAULT_STATE_DIR, approve_suggestions, sync_provider_metadata, write_state
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--repo", default=".", help="Repository root to scan when --discover is set")
     scan.add_argument("--discover", action="store_true", help="Discover a draft contract from repository evidence")
     scan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    scan.add_argument("--out", help="Write discovered contract JSON (valid YAML) to this path")
 
     validate = sub.add_parser("validate", help="Validate a contract")
     validate.add_argument("--environment", help="Environment to validate")
@@ -28,9 +30,22 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("service", help="Service name")
     materialize.add_argument("--out", help="Output file path; defaults to stdout")
     materialize.add_argument("--dry-run", action="store_true", help="Print instead of writing --out")
+    materialize.add_argument("--environment", help="Environment used to validate materialization scope")
+    materialize.add_argument("--overlay", help="Overlay used to validate materialization scope")
 
     suggest = sub.add_parser("suggest", help="Suggest provider bindings for required variables")
     suggest.add_argument("--provider", required=True, help="Provider profile name from the contract")
+    suggest.add_argument("--out", default=str(DEFAULT_STATE_DIR / "suggestions.json"), help="Suggestion state file")
+
+    approve = sub.add_parser("approve", help="Approve saved provider suggestions")
+    approve.add_argument("--suggestions", default=str(DEFAULT_STATE_DIR / "suggestions.json"))
+    approve.add_argument("--out", default=str(DEFAULT_STATE_DIR / "approvals.json"))
+    approve.add_argument("--all", action="store_true", help="Also approve medium/low-confidence mappings")
+
+    sync = sub.add_parser("sync", help="Synchronize approved bindings with provider metadata")
+    sync.add_argument("--provider", required=True, help="Provider profile name from the contract")
+    sync.add_argument("--approvals", default=str(DEFAULT_STATE_DIR / "approvals.json"))
+    sync.add_argument("--out", help="Sync state file; defaults to .agent-vars/sync-<provider>.json")
 
     publish = sub.add_parser("publish", help="Publish a scoped ephemeral runtime value")
     publish.add_argument("key")
@@ -44,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--instance")
     publish.add_argument("--slot", default="primary")
     publish.add_argument("--ttl", default="2h")
+    publish.add_argument("--takeover", action="store_true", help="Explicitly replace another active primary lease")
 
     trace = sub.add_parser("trace", help="Trace the latest scoped runtime value")
     trace.add_argument("key")
@@ -81,7 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "scan" and args.discover:
             discovered = scan_repo(Path(args.repo))
-            sys.stdout.write(as_json(discovered) if args.json else as_json(discovered))
+            rendered = as_json(discovered)
+            if args.out:
+                Path(args.out).write_text(rendered, encoding="utf-8")
+            if args.json or not args.out:
+                sys.stdout.write(rendered)
             return 0
 
         contract = load_contract(contract_path)
@@ -105,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "materialize":
+            issues = validate_contract(contract, environment=args.environment, overlay=args.overlay)
+            if any(issue.level == "error" for issue in issues):
+                for issue in issues:
+                    print(issue.render(), file=sys.stderr)
+                return 1
             rendered = materialize_service(contract, args.service)
             if args.out and not args.dry_run:
                 Path(args.out).write_text(rendered, encoding="utf-8")
@@ -117,11 +142,28 @@ def main(argv: list[str] | None = None) -> int:
             provider = providers.get(args.provider) if isinstance(providers, dict) else None
             if not isinstance(provider, dict):
                 raise ValueError(f"unknown provider: {args.provider}")
-            sys.stdout.write(as_json(suggest_bindings(contract, args.provider, list_secrets(args.provider, provider))))
+            suggestions = suggest_bindings(contract, args.provider, list_secrets(args.provider, provider))
+            write_state(Path(args.out), suggestions)
+            sys.stdout.write(as_json(suggestions))
+            return 0
+
+        if args.command == "approve":
+            approvals = approve_suggestions(Path(args.suggestions), Path(args.out), approve_all=args.all)
+            sys.stdout.write(as_json(approvals))
+            return 0
+
+        if args.command == "sync":
+            providers = contract.get("providers", {})
+            provider = providers.get(args.provider) if isinstance(providers, dict) else None
+            if not isinstance(provider, dict):
+                raise ValueError(f"unknown provider: {args.provider}")
+            sync_path = Path(args.out) if args.out else DEFAULT_STATE_DIR / f"sync-{args.provider}.json"
+            result = sync_provider_metadata(args.provider, list_secrets(args.provider, provider), Path(args.approvals), sync_path)
+            sys.stdout.write(as_json(result))
             return 0
 
         if args.command == "publish":
-            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl)
+            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover)
             sys.stdout.write(as_json(event.__dict__))
             return 0
 

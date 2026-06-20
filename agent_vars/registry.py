@@ -9,6 +9,10 @@ import os
 import secrets
 
 
+class RegistryConflict(RuntimeError):
+    """Raised when an active primary lease would be replaced implicitly."""
+
+
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -45,12 +49,21 @@ class Registry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.data = self._load()
 
-    def publish(self, key: str, value: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, instance: str | None, slot: str | None, ttl: str | None) -> RegistryEvent:
+    def publish(self, key: str, value: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, instance: str | None, slot: str | None, ttl: str | None, takeover: bool = False) -> RegistryEvent:
         instance = instance or f"{service or 'instance'}.{secrets.token_hex(8)}"
         status = "active"
         if slot == "primary":
             for event in self.data["events"]:
                 if self._same_scope(event, environment, overlay, sandbox, task, service, slot) and not self._expired(event):
+                    if event.get("status") != "active":
+                        continue
+                    if event.get("instance") == instance:
+                        event["status"] = "superseded"
+                        continue
+                    if not takeover:
+                        raise RegistryConflict(
+                            f"primary lease is held by {event.get('instance')}; retry with --takeover to replace it"
+                        )
                     event["status"] = "stale"
         event = RegistryEvent("publish", key, value, environment, overlay, sandbox, task, service, instance, slot, status, now().isoformat(), parse_ttl(ttl).isoformat() if ttl else None)
         self.data["events"].append(asdict(event))

@@ -34,3 +34,15 @@ def test_unknown_runtime_source_is_actionable():
     contract["services"]["api-gateway"]["requires"][0]["source"] = "runtime.kafka.url"
     issues = validate_contract(contract)
     assert any("unknown runtime output" in issue.message and issue.hint for issue in issues)
+
+
+def test_overlay_must_match_selected_environment():
+    issues = validate_contract(load_contract(EXAMPLE), environment="qa", overlay="preview")
+    assert any("not selected environment" in issue.message for issue in issues)
+
+
+def test_unknown_environment_provider_is_rejected():
+    contract = load_contract(EXAMPLE)
+    contract["environments"]["dev"]["provider_profile"] = "missing"
+    issues = validate_contract(contract)
+    assert any("unknown provider profile" in issue.message for issue in issues)

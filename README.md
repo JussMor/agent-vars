@@ -490,12 +490,22 @@ python -m agent_vars.cli --contract agent-vars.example.yaml materialize api-gate
 
 The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
 
+Install the CLI and development dependencies with:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest -q
+```
+
 ## Provider suggestions and runtime registry
 
 The coding-phase implementation also includes provider-guided suggestions and a scoped runtime registry for preview values. `suggest` can inspect supported provider profiles (`gcp`, `doppler`, and `local`) and propose bindings with confidence/evidence instead of silently wiring low-confidence mappings.
 
 ```bash
 agent-vars --contract agent-vars.example.yaml suggest --provider gcp-dev
+agent-vars --contract agent-vars.example.yaml approve
+agent-vars --contract agent-vars.example.yaml sync --provider gcp-dev
 agent-vars publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789 --service api-gateway --ttl 2h
 agent-vars trace service.api-gateway.primary.url --environment dev --overlay preview --sandbox codex-workspace-abc123
 agent-vars events --sandbox codex-workspace-abc123
@@ -504,3 +514,9 @@ agent-vars diff qa prod --service api-gateway
 ```
 
 For deterministic CI and local tests, provider adapters accept JSON fixture files through `AGENT_VARS_GCP_SECRETS_FILE` and `AGENT_VARS_DOPPLER_SECRETS_FILE`. Without fixtures, the GCP adapter shells out to `gcloud secrets list`, and the Doppler adapter shells out to `doppler secrets download`.
+
+Suggestions are written to `.agent-vars/suggestions.json`. `approve` approves only high-confidence mappings unless `--all` is explicitly supplied. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads.
+
+Publishing a second primary instance in the same scope fails while the first lease is active. Use `--takeover` only when replacing that primary is intentional.
+
+The complete product roadmap and remaining production work are tracked in [PLAN.md](PLAN.md). The current implementation is a tested foundation, not yet a production secret delivery or governance system.
