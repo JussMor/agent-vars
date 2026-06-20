@@ -4,7 +4,7 @@
 
 Build a service and CLI that let enterprise repositories declare, validate, materialize, and trace environment configuration across many services, environments, cloud providers, file secrets, runtime dependencies, and ephemeral workspaces.
 
-## Implementation status (2026-06-19)
+## Implementation status (2026-06-20)
 
 The roadmap below describes the complete product. Each milestone item is marked individually. `[x]` means implemented and tested; `[ ]` means incomplete, with partial implementations called out explicitly.
 
@@ -13,8 +13,8 @@ The roadmap below describes the complete product. Each milestone item is marked 
 - Milestone 3: complete
 - Milestone 4: complete
 - Milestone 5: complete
-- Milestone 6: partial
-- Milestone 7: partial
+- Milestone 6: complete
+- Milestone 7: complete
 - Milestone 8: pending
 
 ### Pending production work
@@ -24,9 +24,9 @@ The roadmap below describes the complete product. Each milestone item is marked 
 - [ ] Materialize file-secret payloads atomically, validate formats/policies, set permissions, and manage mount lifecycle — partial: atomic writes, JSON validation, mount-root confinement, and `0600` permissions are implemented; policy and lifecycle cleanup remain
 - [x] Expand scanner parsing for Kubernetes, Helm, Terraform outputs, cloud outputs, and CI matrices beyond evidence detection
 - [ ] Add service-output schemas — renewable leases, replica policy enforcement, tombstones, and scoped dependent action queues are implemented
-- [ ] Add complete provenance to every resolved value and value-aware environment diffs
-- [ ] Add Vault, AWS Secrets Manager, Kubernetes Secrets, Cloudflare secrets, and encrypted-local provider adapters
-- [ ] Add approval policies, reviewer enforcement, public-secret leak detection, audit export, and CI status checks
+- [x] Add complete provenance to every resolved value and value-aware environment diffs
+- [x] Add Vault, AWS Secrets Manager, Kubernetes Secrets, Cloudflare secrets, and encrypted-local provider adapters
+- [ ] Add reviewer enforcement, public-secret leak detection, audit export, and CI status checks — low-confidence and production-impacting mapping approval policies are implemented
 - [ ] Add integration/end-to-end tests against provider emulators or dedicated test projects
 
 ## Scope
@@ -98,24 +98,24 @@ Agent Vars should manage:
 
 ### Milestone 6: Provenance and debugging
 
-- [ ] record source, provider, service, environment, overlay, phase, sandbox, instance, status, and timestamp for every value — partial: resolved values now include the complete provenance record; raw registry events still lack provider and phase
+- [x] record source, provider, service, environment, overlay, phase, sandbox, instance, status, and timestamp for every value
 - [x] provide `doctor`, `trace`, `events`, and `diff` commands
-- [ ] surface missing, malformed, stale, and conflicting values — partial: malformed declarations and source conflicts are surfaced; resolved-value and stale diagnostics remain incomplete
+- [x] surface missing, malformed, stale, and conflicting values
 - [x] include actionable remediation hints in validation errors for implemented checks
 
 ### Milestone 7: Provider adapters and guided mapping
 
 - [x] GCP Secret Manager metadata listing and on-demand payload retrieval
-- [ ] Cloudflare secrets
+- [x] Cloudflare secret metadata adapter (payloads are write-only by platform design)
 - [x] Doppler metadata listing and on-demand payload retrieval
-- [ ] Vault
-- [ ] AWS Secrets Manager
-- [ ] Kubernetes Secrets
-- [ ] local encrypted files for development — a plaintext local `.env` metadata adapter exists, but encrypted storage does not
-- [ ] list provider resources and metadata for selected environments — partial: explicit provider profiles can be listed/synced; environment-driven selection is incomplete
+- [x] Vault
+- [x] AWS Secrets Manager
+- [x] Kubernetes Secrets
+- [x] local encrypted files for development through `age`
+- [x] list provider resources and metadata for selected environments
 - [x] suggest bindings between discovered env vars and provider secrets
 - [x] assign confidence scores and evidence to every suggestion
-- [ ] require approval for low-confidence or production-impacting mappings — partial: non-high-confidence mappings require explicit `approve --all`; production-impact policy is not implemented
+- [x] require explicit approval flags for low-confidence and production-impacting mappings
 
 ### Milestone 8: Enterprise policy and governance
 

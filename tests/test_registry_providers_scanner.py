@@ -15,6 +15,14 @@ def test_provider_suggestions_match_env_names():
     assert any(item["service"] == "api-gateway" and item["required"] == "NATS_URL" and item["confidence"] == "high" for item in suggestions)
 
 
+def test_provider_suggestions_score_separator_normalization_as_medium():
+    contract = load_contract(Path("agent-vars.example.yaml"))
+    suggestions = suggest_bindings(contract, "vault", [ProviderSecret("nats-url", "vault", "vault", {})])
+    item = next(item for item in suggestions if item["service"] == "api-gateway" and item["required"] == "NATS_URL")
+    assert item["confidence"] == "medium"
+    assert item["evidence"]
+
+
 def test_registry_primary_publish_requires_explicit_takeover(tmp_path):
     registry = Registry(tmp_path / "registry.json")
     registry.publish("service.api.url", "https://one", environment="dev", overlay="preview", sandbox="s1", task="t1", service="api", instance="api.1", slot="primary", ttl="1h")
