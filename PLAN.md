@@ -4,6 +4,31 @@
 
 Build a service and CLI that let enterprise repositories declare, validate, materialize, and trace environment configuration across many services, environments, cloud providers, file secrets, runtime dependencies, and ephemeral workspaces.
 
+## Implementation status (2026-06-19)
+
+The roadmap below describes the complete product. Each milestone item is marked individually. `[x]` means implemented and tested; `[ ]` means incomplete, with partial implementations called out explicitly.
+
+- Milestone 1: complete foundation
+- Milestone 2: partial
+- Milestone 3: partial
+- Milestone 4: partial
+- Milestone 5: partial
+- Milestone 6: partial
+- Milestone 7: partial
+- Milestone 8: pending
+
+### Pending production work
+
+- [ ] Resolve and inject actual scalar values using documented task/sandbox/overlay/environment/provider/default precedence
+- [ ] Fetch provider secret payloads without persisting them in workflow metadata
+- [ ] Materialize file-secret payloads atomically, validate formats/policies, set permissions, and manage mount lifecycle
+- [ ] Expand scanner parsing for Kubernetes, Helm, Terraform outputs, cloud outputs, and CI matrices beyond evidence detection
+- [ ] Add renewable leases, replica policy enforcement, service-output schemas, tombstones, and dependent rebuild/restart/hot-refresh hooks
+- [ ] Add complete provenance to every resolved value and value-aware environment diffs
+- [ ] Add Vault, AWS Secrets Manager, Kubernetes Secrets, Cloudflare secrets, and encrypted-local provider adapters
+- [ ] Add approval policies, reviewer enforcement, public-secret leak detection, audit export, and CI status checks
+- [ ] Add integration/end-to-end tests against provider emulators or dedicated test projects
+
 ## Scope
 
 Agent Vars should manage:
@@ -22,83 +47,83 @@ Agent Vars should manage:
 
 ### Milestone 1: Enterprise contract format
 
-- define `agent-vars.yaml`
-- support `repo`, `environments`, `overlays`, `providers`, `runtime_dependencies`, `files`, and `services`
-- support service-level `env_files`, `requires`, `instance_policy`, `framework`, and `discovered_from`
-- distinguish `secret`, `file-secret`, `public`, and `internal` visibility
-- distinguish `setup`, `build`, `runtime`, and `hot` phases
+- [x] define `agent-vars.yaml`
+- [x] support `repo`, `environments`, `overlays`, `providers`, `runtime_dependencies`, `files`, and `services`
+- [x] support service-level `env_files`, `requires`, `instance_policy`, `framework`, and `discovered_from`
+- [x] distinguish `secret`, `file-secret`, `public`, and `internal` visibility
+- [x] distinguish `setup`, `build`, `runtime`, and `hot` phases
 
 ### Milestone 2: Repo scanner and profile generator
 
-- detect service roots in monorepos and multi-repo workspaces
-- detect frontend frameworks and public env prefixes such as `VITE_` and `NEXT_PUBLIC_`
-- detect env usage in code, including `process.env`, `import.meta.env`, framework config, and build scripts
-- detect existing `.env*` files and templates
-- detect Docker Compose runtime dependencies such as NATS, Redis, MongoDB, and Postgres
-- detect Kubernetes, Helm, Terraform, and cloud output references
-- detect CI/CD environment matrices such as `dev`, `qa`, `stage`, `uat`, and `prod`
-- detect Dockerfile patterns such as `Dockerfile.server`
-- detect existing credential paths such as `/app/gcp-credentials` and `/app/.config/gcloud`
-- produce a draft contract with uncertain mappings marked for review
+- [ ] detect service roots in monorepos and multi-repo workspaces — partial: monorepo roots are discovered; coordinated multi-repo workspace profiles are not implemented
+- [x] detect frontend frameworks and public env prefixes such as `VITE_` and `NEXT_PUBLIC_`
+- [ ] detect env usage in code, including `process.env`, `import.meta.env`, framework config, and build scripts — partial: direct JavaScript/TypeScript/Python references are detected; framework config and build-script parsing remain
+- [x] detect existing `.env*` files and templates
+- [x] detect Docker Compose runtime dependencies such as NATS, Redis, MongoDB, and Postgres
+- [ ] detect Kubernetes, Helm, Terraform, and cloud output references — partial: manifest files are inventoried, but references and outputs are not parsed
+- [ ] detect CI/CD environment matrices such as `dev`, `qa`, `stage`, `uat`, and `prod` — partial: environment-name evidence is detected; matrix structure is not parsed
+- [x] detect Dockerfile patterns such as `Dockerfile.server`
+- [ ] detect existing credential paths such as `/app/gcp-credentials` and `/app/.config/gcloud`
+- [x] produce a draft contract with uncertain mappings marked for review
 
 ### Milestone 3: Contract validator
 
-- resolve environment and overlay inheritance
-- resolve provider profiles by environment
-- validate required values by service and phase
-- validate runtime dependency outputs
-- validate file-secret shape, including JSON parsing for Google credentials
-- detect duplicate variables with conflicting source or meaning
-- produce actionable errors before setup, build, runtime, or deploy
+- [ ] resolve environment and overlay inheritance — partial: compatibility and parent existence are validated; inherited values are not merged
+- [ ] resolve provider profiles by environment — partial: profile references are validated; provider values are not resolved
+- [ ] validate required values by service and phase — declarations are validated, but actual resolved-value presence is not
+- [x] validate runtime dependency outputs
+- [ ] validate file-secret shape, including JSON parsing for Google credentials — partial: declaration format and mount path are validated; payload JSON is not fetched or parsed
+- [x] detect duplicate variables with conflicting source or meaning
+- [x] produce actionable errors before setup, build, runtime, or deploy for implemented structural checks
 
 ### Milestone 4: Materializer
 
-- generate service-specific `.env` files
-- mount file secrets at declared repo-compatible paths
-- inject pointer env vars such as `GOOGLE_APPLICATION_CREDENTIALS`
-- avoid writing file-secret contents into `.env` files when a mount is required
-- support dry-run output for CI review
+- [x] generate service-specific `.env` files
+- [ ] mount file secrets at declared repo-compatible paths
+- [x] inject pointer env vars such as `GOOGLE_APPLICATION_CREDENTIALS`
+- [x] avoid writing file-secret contents into `.env` files when a mount is required
+- [x] support dry-run output for CI review
 
 ### Milestone 5: Dynamic registry and scoped ephemeral values
 
-- accept service outputs from ephemeral containers
-- assign every publisher a unique instance identity
-- store generated values by environment, overlay, sandbox, task, service, and instance scope
-- support primary leases and optional replicas
-- mark outputs stale when leases expire
-- apply TTL-based deletion for task-scoped and sandbox-scoped values
-- trigger rebuild, restart, or hot refresh only inside the affected scope
-- prevent duplicate instances from silently overwriting primary outputs
-- never write generated task-local values back into shared provider secrets
+- [x] accept service outputs from ephemeral containers through `publish`
+- [x] assign every publisher a unique instance identity
+- [x] store generated values by environment, overlay, sandbox, task, service, and instance scope
+- [ ] support primary leases and optional replicas — partial: primary conflict/takeover behavior exists; replica policy enforcement does not
+- [ ] mark outputs stale when leases expire — expired values are excluded and can be marked `expired`, but renewable lease/stale semantics remain
+- [ ] apply TTL-based deletion for task-scoped and sandbox-scoped values — TTL expiry exists; deletion and tombstone retention do not
+- [ ] trigger rebuild, restart, or hot refresh only inside the affected scope
+- [x] prevent duplicate instances from silently overwriting primary outputs
+- [x] never write generated task-local values back into shared provider secrets
 
 ### Milestone 6: Provenance and debugging
 
-- record source, provider, service, environment, overlay, phase, sandbox, instance, status, and timestamp for every value
-- provide `doctor`, `trace`, `events`, and `diff` commands
-- surface missing, malformed, stale, and conflicting values
-- include actionable remediation hints in validation errors
+- [ ] record source, provider, service, environment, overlay, phase, sandbox, instance, status, and timestamp for every value — partial: registry scope, instance, status, and timestamps exist; source/provider/phase are incomplete
+- [x] provide `doctor`, `trace`, `events`, and `diff` commands
+- [ ] surface missing, malformed, stale, and conflicting values — partial: malformed declarations and source conflicts are surfaced; resolved-value and stale diagnostics remain incomplete
+- [x] include actionable remediation hints in validation errors for implemented checks
 
 ### Milestone 7: Provider adapters and guided mapping
 
-- GCP Secret Manager
-- Cloudflare secrets
-- Doppler
-- Vault
-- AWS Secrets Manager
-- Kubernetes Secrets
-- local encrypted files for development
-- list provider resources and metadata for selected environments
-- suggest bindings between discovered env vars and provider secrets
-- assign confidence scores and evidence to every suggestion
-- require approval for low-confidence or production-impacting mappings
+- [ ] GCP Secret Manager — partial: secret metadata listing exists; payload retrieval/materialization does not
+- [ ] Cloudflare secrets
+- [ ] Doppler — partial: metadata listing exists; payload resolution/materialization does not
+- [ ] Vault
+- [ ] AWS Secrets Manager
+- [ ] Kubernetes Secrets
+- [ ] local encrypted files for development — a plaintext local `.env` metadata adapter exists, but encrypted storage does not
+- [ ] list provider resources and metadata for selected environments — partial: explicit provider profiles can be listed/synced; environment-driven selection is incomplete
+- [x] suggest bindings between discovered env vars and provider secrets
+- [x] assign confidence scores and evidence to every suggestion
+- [ ] require approval for low-confidence or production-impacting mappings — partial: non-high-confidence mappings require explicit `approve --all`; production-impact policy is not implemented
 
 ### Milestone 8: Enterprise policy and governance
 
-- support required reviewers for contract changes
-- detect accidental secret exposure in public/build variables
-- enforce prod-only restrictions and approval policies
-- export audit logs for security teams
-- integrate with CI status checks
+- [ ] support required reviewers for contract changes
+- [ ] detect accidental secret exposure in public/build variables
+- [ ] enforce prod-only restrictions and approval policies
+- [ ] export audit logs for security teams
+- [ ] integrate with CI status checks
 
 ## First usable workflow
 
@@ -113,6 +138,8 @@ agent-vars materialize api-gateway --environment dev --overlay preview
 agent-vars publish service.api-gateway.url https://api-gateway-abc123.example.dev
 agent-vars doctor frontend --environment dev --overlay preview
 ```
+
+This local metadata workflow is implemented. `suggest` persists candidates in `.agent-vars/suggestions.json`; `approve` accepts high-confidence candidates by default; and `sync` records resource availability and approved binding status without storing provider secret values.
 
 ## Success criteria
 

@@ -44,6 +44,18 @@ def validate_contract(contract: dict[str, Any], *, environment: str | None = Non
     _require(contract, "project", str, issues)
     services = _require(contract, "services", dict, issues) or {}
     envs = _require(contract, "environments", dict, issues) or {}
+    providers = contract.get("providers", {})
+    if providers is not None and not isinstance(providers, dict):
+        issues.append(ValidationIssue("error", "providers", "providers must be a mapping"))
+        providers = {}
+
+    for env_name, env in envs.items():
+        if not isinstance(env, dict):
+            issues.append(ValidationIssue("error", f"environments.{env_name}", "environment must be a mapping"))
+            continue
+        profile = env.get("provider_profile")
+        if profile and profile not in providers:
+            issues.append(ValidationIssue("error", f"environments.{env_name}.provider_profile", f"unknown provider profile {profile!r}", "declare it under providers"))
 
     if environment and environment not in envs:
         issues.append(ValidationIssue("error", f"environments.{environment}", "environment is not declared", "add it under environments or choose a declared environment"))
@@ -55,6 +67,23 @@ def validate_contract(contract: dict[str, Any], *, environment: str | None = Non
             parent = overlays[overlay].get("inherits") if isinstance(overlays[overlay], dict) else None
             if parent and parent not in envs:
                 issues.append(ValidationIssue("error", f"overlays.{overlay}.inherits", f"inherits unknown environment {parent!r}", "point inherits at a declared environment"))
+            if environment and parent and environment != parent:
+                issues.append(ValidationIssue("error", f"overlays.{overlay}.inherits", f"overlay inherits {parent!r}, not selected environment {environment!r}", "select the inherited environment or use a compatible overlay"))
+
+    files = contract.get("files", {})
+    if files is not None and not isinstance(files, dict):
+        issues.append(ValidationIssue("error", "files", "files must be a mapping"))
+    elif isinstance(files, dict):
+        for file_name, item in files.items():
+            file_path = f"files.{file_name}"
+            if not isinstance(item, dict):
+                issues.append(ValidationIssue("error", file_path, "file secret must be a mapping"))
+                continue
+            if item.get("format") not in {"json", "text", "binary"}:
+                issues.append(ValidationIssue("error", f"{file_path}.format", "format must be json, text, or binary"))
+            mount = item.get("mount")
+            if not isinstance(mount, dict) or not isinstance(mount.get("path"), str) or not mount.get("path"):
+                issues.append(ValidationIssue("error", f"{file_path}.mount.path", "mount path is required"))
 
     runtime_outputs = _collect_outputs(contract.get("runtime_dependencies", {}), "runtime")
     file_outputs = _collect_file_outputs(contract.get("files", {}))
