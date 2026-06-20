@@ -74,6 +74,42 @@ class Registry:
         matches = [e for e in self.data["events"] if e["key"] == key and not self._expired(e) and self._matches(e, scope)]
         return matches[-1] if matches else None
 
+    def resolve_scoped(
+        self,
+        key: str,
+        *,
+        environment: str,
+        overlay: str | None,
+        sandbox: str | None,
+        task: str | None,
+    ) -> dict[str, Any] | None:
+        """Resolve a publication from task to sandbox to overlay to environment scope."""
+        ranked: list[tuple[int, int, dict[str, Any]]] = []
+        for index, event in enumerate(self.data["events"]):
+            if event.get("key") != key or event.get("environment") != environment or self._expired(event):
+                continue
+            if event.get("status") != "active":
+                continue
+            event_overlay = event.get("overlay")
+            event_sandbox = event.get("sandbox")
+            event_task = event.get("task")
+            if event_task is not None:
+                if task is None or event_task != task or event_sandbox != sandbox or event_overlay != overlay:
+                    continue
+                rank = 4
+            elif event_sandbox is not None:
+                if sandbox is None or event_sandbox != sandbox or event_overlay != overlay:
+                    continue
+                rank = 3
+            elif event_overlay is not None:
+                if overlay is None or event_overlay != overlay:
+                    continue
+                rank = 2
+            else:
+                rank = 1
+            ranked.append((rank, index, event))
+        return max(ranked, default=(0, 0, None), key=lambda item: (item[0], item[1]))[2]
+
     def events(self, **scope: str | None) -> list[dict[str, Any]]:
         return [e for e in self.data["events"] if self._matches(e, scope)]
 
