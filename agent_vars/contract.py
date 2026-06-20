@@ -123,7 +123,7 @@ def validate_contract(contract: dict[str, Any], *, environment: str | None = Non
     return issues
 
 
-def materialize_service(contract: dict[str, Any], service_name: str) -> str:
+def materialize_service(contract: dict[str, Any], service_name: str, resolved_values: dict[str, Any] | None = None) -> str:
     services = contract.get("services", {})
     service = services.get(service_name) if isinstance(services, dict) else None
     if not isinstance(service, dict):
@@ -134,10 +134,20 @@ def materialize_service(contract: dict[str, Any], service_name: str) -> str:
             continue
         if req.get("visibility") == "file-secret" and str(req.get("source", "")).startswith("file."):
             value = _file_mount_value(contract, str(req["source"])) or f"${{{req['name']}}}"
+        elif resolved_values and req["name"] in resolved_values:
+            resolved = resolved_values[req["name"]]
+            resolved_value = getattr(resolved, "value", resolved)
+            value = _dotenv_value(str(resolved_value)) if resolved_value is not None else f"${{{req['name']}}}"
         else:
             value = f"${{{req['name']}}}"
         lines.append(f"{req['name']}={value}")
     return "\n".join(lines) + "\n"
+
+
+def _dotenv_value(value: str) -> str:
+    if not value or any(char in value for char in "\n\r#\"'") or value != value.strip():
+        return json.dumps(value)
+    return value
 
 
 def contract_summary(contract: dict[str, Any]) -> dict[str, int]:

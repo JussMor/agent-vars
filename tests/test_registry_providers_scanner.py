@@ -3,7 +3,7 @@ import json
 import pytest
 
 from agent_vars.contract import load_contract
-from agent_vars.providers import ProviderSecret, suggest_bindings
+from agent_vars.providers import ProviderSecret, get_secret, suggest_bindings
 from agent_vars.registry import Registry, RegistryConflict
 from agent_vars.scanner import scan_repo
 from agent_vars.workflow import approve_suggestions, sync_provider_metadata, write_state
@@ -25,6 +25,14 @@ def test_registry_primary_publish_requires_explicit_takeover(tmp_path):
     events = registry.events(environment="dev", overlay="preview", sandbox="s1")
     assert [event["status"] for event in events] == ["stale", "active"]
     assert registry.trace("service.api.url", environment="dev", overlay="preview", sandbox="s1")["value"] == "https://two"
+
+
+def test_registry_resolution_falls_back_through_scopes(tmp_path):
+    registry = Registry(tmp_path / "registry.json")
+    registry.publish("service.api.url", "https://env", environment="dev", overlay=None, sandbox=None, task=None, service="api", instance="api.env", slot="primary", ttl="1h")
+    registry.publish("service.api.url", "https://sandbox", environment="dev", overlay="preview", sandbox="s1", task=None, service="api", instance="api.sandbox", slot="primary", ttl="1h")
+    assert registry.resolve_scoped("service.api.url", environment="dev", overlay="preview", sandbox="s1", task="t1")["value"] == "https://sandbox"
+    assert registry.resolve_scoped("service.api.url", environment="dev", overlay="preview", sandbox="s2", task="t2")["value"] == "https://env"
 
 
 def test_scanner_discovers_env_usage(tmp_path):
@@ -61,3 +69,10 @@ def test_approval_and_sync_workflow(tmp_path):
     assert [item["required"] for item in approved] == ["TOKEN"]
     state = sync_provider_metadata("local", [ProviderSecret("TOKEN", "local", "local", {})], approvals, sync)
     assert state["bindings"][0]["status"] == "available"
+
+
+def test_gcp_payload_fixture_is_read_without_state_file(tmp_path, monkeypatch):
+    fixture = tmp_path / "values.json"
+    fixture.write_text('{"API_TOKEN":"secret-value"}', encoding="utf-8")
+    monkeypatch.setenv("AGENT_VARS_GCP_VALUES_FILE", str(fixture))
+    assert get_secret("gcp-dev", {"kind": "gcp", "project_id": "test"}, "API_TOKEN") == "secret-value"

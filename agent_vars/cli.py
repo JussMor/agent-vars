@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from .contract import as_json, contract_summary, load_contract, materialize_service, validate_contract
 from .providers import list_secrets, suggest_bindings
 from .registry import Registry
+from .resolution import missing_required, resolve_service
 from .scanner import scan_repo
+from .materializer import materialize_file_secrets
 from .workflow import DEFAULT_STATE_DIR, approve_suggestions, sync_provider_metadata, write_state
 
 
@@ -25,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="Validate a contract")
     validate.add_argument("--environment", help="Environment to validate")
     validate.add_argument("--overlay", help="Overlay to validate")
+    validate.add_argument("--service", help="Also resolve required values for this service")
+    validate.add_argument("--phase", choices=("setup", "build", "runtime", "hot"))
+    validate.add_argument("--values", help="JSON file containing layered values")
+    validate.add_argument("--sandbox")
+    validate.add_argument("--task")
 
     materialize = sub.add_parser("materialize", help="Render a service .env file")
     materialize.add_argument("service", help="Service name")
@@ -32,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--dry-run", action="store_true", help="Print instead of writing --out")
     materialize.add_argument("--environment", help="Environment used to validate materialization scope")
     materialize.add_argument("--overlay", help="Overlay used to validate materialization scope")
+    materialize.add_argument("--sandbox")
+    materialize.add_argument("--task")
+    materialize.add_argument("--values", help="JSON file containing layered scalar values")
+    materialize.add_argument("--strict", action="store_true", help="Fail when a required value is unresolved")
+    materialize.add_argument("--file-values", help="JSON object of file-secret payloads, intended for tests/local automation")
+    materialize.add_argument("--mount-root", help="Materialize declared file mounts beneath this root")
 
     suggest = sub.add_parser("suggest", help="Suggest provider bindings for required variables")
     suggest.add_argument("--provider", required=True, help="Provider profile name from the contract")
@@ -82,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("service")
     doctor.add_argument("--environment")
     doctor.add_argument("--overlay")
+    doctor.add_argument("--sandbox")
+    doctor.add_argument("--task")
+    doctor.add_argument("--values", help="JSON file containing layered values")
+    doctor.add_argument("--reveal", action="store_true", help="Include resolved values; unsafe for shared logs")
 
     diff = sub.add_parser("diff", help="Diff provider profiles used by two environments")
     diff.add_argument("left")
@@ -121,6 +139,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(issue.render(), file=sys.stderr if issue.level == "error" else sys.stdout)
             if any(issue.level == "error" for issue in issues):
                 return 1
+            if args.service:
+                service = (contract.get("services") or {}).get(args.service)
+                if not isinstance(service, dict):
+                    raise ValueError(f"unknown service: {args.service}")
+                resolved = resolve_service(
+                    contract,
+                    args.service,
+                    environment=args.environment,
+                    overlay=args.overlay,
+                    sandbox=args.sandbox,
+                    task=args.task,
+                    layers=_read_json(args.values),
+                )
+                missing = missing_required(service, resolved, args.phase)
+                if missing:
+                    print(f"missing required values: {', '.join(missing)}", file=sys.stderr)
+                    return 1
             print("contract valid")
             return 0
 
@@ -130,7 +165,30 @@ def main(argv: list[str] | None = None) -> int:
                 for issue in issues:
                     print(issue.render(), file=sys.stderr)
                 return 1
-            rendered = materialize_service(contract, args.service)
+            resolved = resolve_service(
+                contract,
+                args.service,
+                environment=args.environment,
+                overlay=args.overlay,
+                sandbox=args.sandbox,
+                task=args.task,
+                layers=_read_json(args.values),
+            )
+            service = (contract.get("services") or {}).get(args.service, {})
+            missing = missing_required(service, resolved) if isinstance(service, dict) else []
+            if args.strict and missing:
+                raise ValueError(f"missing required values: {', '.join(missing)}")
+            if args.mount_root and not args.dry_run:
+                if not args.environment:
+                    raise ValueError("--environment is required with --mount-root")
+                materialize_file_secrets(
+                    contract,
+                    args.service,
+                    environment=args.environment,
+                    mount_root=Path(args.mount_root),
+                    payloads=_read_json(args.file_values),
+                )
+            rendered = materialize_service(contract, args.service, resolved)
             if args.out and not args.dry_run:
                 Path(args.out).write_text(rendered, encoding="utf-8")
             else:
@@ -183,8 +241,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             issues = validate_contract(contract, environment=args.environment, overlay=args.overlay)
             service = (contract.get("services") or {}).get(args.service)
-            sys.stdout.write(as_json({"service": args.service, "issues": [i.__dict__ for i in issues], "requires": service.get("requires", []) if isinstance(service, dict) else []}))
-            return 1 if any(i.level == "error" for i in issues) else 0
+            if not isinstance(service, dict):
+                raise ValueError(f"unknown service: {args.service}")
+            resolved = resolve_service(
+                contract,
+                args.service,
+                environment=args.environment,
+                overlay=args.overlay,
+                sandbox=args.sandbox,
+                task=args.task,
+                layers=_read_json(args.values),
+            )
+            missing = missing_required(service, resolved)
+            sys.stdout.write(as_json({
+                "service": args.service,
+                "issues": [i.__dict__ for i in issues],
+                "missing": missing,
+                "values": {name: value.provenance(reveal=args.reveal) for name, value in resolved.items()},
+            }))
+            return 1 if any(i.level == "error" for i in issues) or missing else 0
 
         if args.command == "diff":
             envs = contract.get("environments", {})
@@ -196,6 +271,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-vars: {exc}", file=sys.stderr)
         return 2
     return 2
+
+
+def _read_json(path: str | None) -> dict[str, object]:
+    if not path:
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON file must contain an object: {path}")
+    return data
 
 
 if __name__ == "__main__":  # pragma: no cover
