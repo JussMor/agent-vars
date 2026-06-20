@@ -36,3 +36,29 @@ def test_strict_materialize_fails_for_missing_required_values(tmp_path, monkeypa
     ])
     assert result == 2
     assert "missing required values" in capsys.readouterr().err
+
+
+def test_publish_renew_actions_and_cleanup_commands(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_VARS_REGISTRY", str(tmp_path / "registry.json"))
+    scope = ["--environment", "dev", "--overlay", "preview", "--sandbox", "s1", "--task", "t1"]
+    assert main([
+        "--contract", str(EXAMPLE), "publish",
+        "service.api-gateway.primary.url", "https://api.example",
+        *scope, "--service", "api-gateway", "--instance", "api.1", "--ttl", "1h",
+    ]) == 0
+    published = json.loads(capsys.readouterr().out)
+    assert published["actions"][0]["action"] == "rebuild"
+
+    assert main(["--contract", str(EXAMPLE), "renew", "api.1", *scope, "--service", "api-gateway", "--ttl", "2h"]) == 0
+    assert "renewed: 1" in capsys.readouterr().out
+
+    assert main(["--contract", str(EXAMPLE), "actions", *scope, "--service", "frontend"]) == 0
+    actions = json.loads(capsys.readouterr().out)
+    assert actions[0]["service"] == "frontend"
+
+    assert main(["--contract", str(EXAMPLE), "ack-actions", str(actions[0]["publication"])]) == 0
+    assert "acknowledged: 1" in capsys.readouterr().out
+
+    assert main(["--contract", str(EXAMPLE), "cleanup", *scope]) == 0
+    assert "deleted: 1" in capsys.readouterr().out

@@ -7,9 +7,9 @@ from pathlib import Path
 
 from .contract import as_json, contract_summary, load_contract, materialize_service, validate_contract
 from .providers import list_secrets, suggest_bindings
-from .registry import Registry
+from .registry import Registry, refresh_actions
 from .resolution import missing_required, resolve_service
-from .scanner import scan_repo
+from .scanner import scan_repo, scan_workspace
 from .materializer import materialize_file_secrets
 from .workflow import DEFAULT_STATE_DIR, approve_suggestions, sync_provider_metadata, write_state
 
@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Scan a repository or summarize an existing contract")
-    scan.add_argument("--repo", default=".", help="Repository root to scan when --discover is set")
+    scan.add_argument("--repo", action="append", help="Repository root to scan; repeat for a multi-repo workspace")
     scan.add_argument("--discover", action="store_true", help="Discover a draft contract from repository evidence")
     scan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     scan.add_argument("--out", help="Write discovered contract JSON (valid YAML) to this path")
@@ -74,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--slot", default="primary")
     publish.add_argument("--ttl", default="2h")
     publish.add_argument("--takeover", action="store_true", help="Explicitly replace another active primary lease")
+    publish.add_argument("--max-replicas", type=int, help="Override the service replica limit")
+
+    renew = sub.add_parser("renew", help="Renew all active outputs for an instance lease")
+    renew.add_argument("instance")
+    renew.add_argument("--environment", required=True)
+    renew.add_argument("--overlay")
+    renew.add_argument("--sandbox")
+    renew.add_argument("--task")
+    renew.add_argument("--service")
+    renew.add_argument("--ttl", default="60s")
 
     trace = sub.add_parser("trace", help="Trace the latest scoped runtime value")
     trace.add_argument("key")
@@ -90,7 +100,23 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--task")
     events.add_argument("--service")
 
+    actions = sub.add_parser("actions", help="List scope-confined rebuild, restart, and hot-refresh actions")
+    actions.add_argument("--environment")
+    actions.add_argument("--overlay")
+    actions.add_argument("--sandbox")
+    actions.add_argument("--task")
+    actions.add_argument("--service")
+
+    acknowledge = sub.add_parser("ack-actions", help="Acknowledge queued actions for a publication index")
+    acknowledge.add_argument("publication", type=int)
+
     sub.add_parser("expire", help="Expire registry values whose TTL elapsed")
+
+    cleanup = sub.add_parser("cleanup", help="Delete scoped values and retain audit tombstones")
+    cleanup.add_argument("--environment")
+    cleanup.add_argument("--overlay")
+    cleanup.add_argument("--sandbox")
+    cleanup.add_argument("--task")
 
     doctor = sub.add_parser("doctor", help="Validate and show a service's required variables")
     doctor.add_argument("service")
@@ -114,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     contract_path = Path(args.contract)
     try:
         if args.command == "scan" and args.discover:
-            discovered = scan_repo(Path(args.repo))
+            roots = [Path(path) for path in (args.repo or ["."])]
+            discovered = scan_workspace(roots) if len(roots) > 1 else scan_repo(roots[0])
             rendered = as_json(discovered)
             if args.out:
                 Path(args.out).write_text(rendered, encoding="utf-8")
@@ -221,8 +248,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "publish":
-            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover)
+            replica_limit = args.max_replicas if args.max_replicas is not None else _replica_limit(contract, args.service)
+            actions = refresh_actions(contract, args.key, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task)
+            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover, max_replicas=replica_limit, actions=actions)
             sys.stdout.write(as_json(event.__dict__))
+            return 0
+
+        if args.command == "renew":
+            renewed = Registry().renew(args.instance, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, ttl=args.ttl)
+            print(f"renewed: {renewed}")
             return 0
 
         if args.command == "trace":
@@ -234,8 +268,21 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(as_json(Registry().events(environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service)))
             return 0
 
+        if args.command == "actions":
+            sys.stdout.write(as_json(Registry().actions(environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service)))
+            return 0
+
+        if args.command == "ack-actions":
+            print(f"acknowledged: {Registry().acknowledge_actions(args.publication)}")
+            return 0
+
         if args.command == "expire":
             print(f"expired: {Registry().expire()}")
+            return 0
+
+        if args.command == "cleanup":
+            deleted = Registry().cleanup(environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task)
+            print(f"deleted: {deleted}")
             return 0
 
         if args.command == "doctor":
@@ -280,6 +327,18 @@ def _read_json(path: str | None) -> dict[str, object]:
     if not isinstance(data, dict):
         raise ValueError(f"JSON file must contain an object: {path}")
     return data
+
+
+def _replica_limit(contract: dict[str, object], service_name: str | None) -> int | None:
+    service = (contract.get("services") or {}).get(service_name, {}) if service_name else {}
+    policy = service.get("instance_policy", {}) if isinstance(service, dict) else {}
+    replicas = policy.get("replicas", 0) if isinstance(policy, dict) else 0
+    if replicas == "many":
+        return None
+    try:
+        return max(0, int(replicas))
+    except (TypeError, ValueError):
+        return 0
 
 
 if __name__ == "__main__":  # pragma: no cover

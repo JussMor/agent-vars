@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 import json
 import os
+import re
 import secrets
 
 
@@ -20,9 +21,12 @@ def now() -> datetime:
 def parse_ttl(value: str | None) -> datetime | None:
     if not value:
         return None
-    unit = value[-1]
-    amount = int(value[:-1]) if unit.isalpha() else int(value)
-    seconds = {"s": amount, "m": amount * 60, "h": amount * 3600, "d": amount * 86400}.get(unit, amount)
+    match = re.fullmatch(r"(\d+)([smhd]?)", value.strip())
+    if not match:
+        raise ValueError("TTL must be a non-negative integer optionally followed by s, m, h, or d")
+    amount = int(match.group(1))
+    unit = match.group(2) or "s"
+    seconds = {"s": amount, "m": amount * 60, "h": amount * 3600, "d": amount * 86400}[unit]
     return now() + timedelta(seconds=seconds)
 
 
@@ -41,6 +45,7 @@ class RegistryEvent:
     status: str
     created_at: str
     expires_at: str | None = None
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Registry:
@@ -49,8 +54,9 @@ class Registry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.data = self._load()
 
-    def publish(self, key: str, value: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, instance: str | None, slot: str | None, ttl: str | None, takeover: bool = False) -> RegistryEvent:
+    def publish(self, key: str, value: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, instance: str | None, slot: str | None, ttl: str | None, takeover: bool = False, max_replicas: int | None = 0, actions: list[dict[str, Any]] | None = None) -> RegistryEvent:
         instance = instance or f"{service or 'instance'}.{secrets.token_hex(8)}"
+        slot = slot or "primary"
         status = "active"
         if slot == "primary":
             for event in self.data["events"]:
@@ -58,20 +64,67 @@ class Registry:
                     if event.get("status") != "active":
                         continue
                     if event.get("instance") == instance:
-                        event["status"] = "superseded"
                         continue
                     if not takeover:
                         raise RegistryConflict(
                             f"primary lease is held by {event.get('instance')}; retry with --takeover to replace it"
                         )
                     event["status"] = "stale"
-        event = RegistryEvent("publish", key, value, environment, overlay, sandbox, task, service, instance, slot, status, now().isoformat(), parse_ttl(ttl).isoformat() if ttl else None)
+        elif slot == "replica":
+            active_instances = {
+                event.get("instance")
+                for event in self.data["events"]
+                if self._same_service_scope(event, environment, overlay, sandbox, task, service)
+                and event.get("slot") == "replica"
+                and event.get("status") == "active"
+                and not self._expired(event)
+            }
+            if instance not in active_instances and max_replicas is not None and len(active_instances) >= max_replicas:
+                raise RegistryConflict(f"replica limit reached for {service}: {max_replicas}")
+        else:
+            raise RegistryConflict("slot must be primary or replica")
+        for prior in self.data["events"]:
+            if prior.get("instance") == instance and prior.get("key") == key and prior.get("status") == "active":
+                prior["status"] = "superseded"
+        event = RegistryEvent("publish", key, value, environment, overlay, sandbox, task, service, instance, slot, status, now().isoformat(), parse_ttl(ttl).isoformat() if ttl else None, actions or [])
         self.data["events"].append(asdict(event))
         self._save()
         return event
 
+    def renew(self, instance: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, ttl: str) -> int:
+        expires_at = parse_ttl(ttl)
+        if expires_at is None:
+            raise ValueError("renewal TTL is required")
+        renewed = 0
+        for event in self.data["events"]:
+            if event.get("type") != "publish" or event.get("instance") != instance or event.get("status") != "active":
+                continue
+            if not self._same_service_scope(event, environment, overlay, sandbox, task, service):
+                continue
+            if self._expired(event):
+                event["status"] = "stale"
+                continue
+            event["expires_at"] = expires_at.isoformat()
+            renewed += 1
+        if not renewed:
+            self._save()
+            raise RegistryConflict(f"no active lease found for instance {instance}")
+        self.data["events"].append(asdict(RegistryEvent(
+            "renew", "lease", None, environment, overlay, sandbox, task, service, instance, None,
+            "active", now().isoformat(), expires_at.isoformat(), [],
+        )))
+        self._save()
+        return renewed
+
     def trace(self, key: str, **scope: str | None) -> dict[str, Any] | None:
-        matches = [e for e in self.data["events"] if e["key"] == key and not self._expired(e) and self._matches(e, scope)]
+        matches = [
+            event for event in self.data["events"]
+            if event.get("type") == "publish"
+            and event.get("status") == "active"
+            and event.get("key") == key
+            and not self._expired(event)
+            and self._matches(event, scope)
+        ]
         return matches[-1] if matches else None
 
     def resolve_scoped(
@@ -113,12 +166,60 @@ class Registry:
     def events(self, **scope: str | None) -> list[dict[str, Any]]:
         return [e for e in self.data["events"] if self._matches(e, scope)]
 
+    def actions(self, **scope: str | None) -> list[dict[str, Any]]:
+        queued = []
+        action_service = scope.pop("service", None)
+        for index, event in enumerate(self.data["events"]):
+            if event.get("type") != "publish" or event.get("status") != "active" or event.get("actions_acknowledged_at") or self._expired(event) or not self._matches(event, scope):
+                continue
+            for action in event.get("actions", []):
+                if action_service is not None and action.get("service") != action_service:
+                    continue
+                queued.append({"publication": index, "key": event.get("key"), **action})
+        return queued
+
+    def acknowledge_actions(self, publication: int) -> int:
+        try:
+            event = self.data["events"][publication]
+        except IndexError as exc:
+            raise ValueError(f"unknown publication index: {publication}") from exc
+        if event.get("type") != "publish":
+            raise ValueError(f"event {publication} is not a publication")
+        count = len(event.get("actions", []))
+        event["actions_acknowledged_at"] = now().isoformat()
+        self._save()
+        return count
+
     def expire(self) -> int:
         count = 0
-        for event in self.data["events"]:
-            if event.get("status") == "active" and self._expired(event):
-                event["status"] = "expired"
+        tombstones: list[dict[str, Any]] = []
+        for event in list(self.data["events"]):
+            if event.get("type") == "publish" and event.get("status") == "active" and self._expired(event):
+                event["status"] = "stale"
+                if event.get("task") is not None or event.get("sandbox") is not None:
+                    event["value"] = None
+                    tombstones.append(self._tombstone(event, "ttl_expired"))
                 count += 1
+        self.data["events"].extend(tombstones)
+        self._save()
+        return count
+
+    def cleanup(self, *, environment: str | None = None, overlay: str | None = None, sandbox: str | None = None, task: str | None = None) -> int:
+        if sandbox is None and task is None:
+            raise ValueError("cleanup requires --sandbox or --task")
+        count = 0
+        tombstones: list[dict[str, Any]] = []
+        scope = {"environment": environment, "overlay": overlay, "sandbox": sandbox, "task": task}
+        for event in list(self.data["events"]):
+            if event.get("type") != "publish" or not self._matches(event, scope):
+                continue
+            if event.get("value") is None and event.get("status") == "deleted":
+                continue
+            event["value"] = None
+            event["status"] = "deleted"
+            tombstones.append(self._tombstone(event, "scope_cleanup"))
+            count += 1
+        self.data["events"].extend(tombstones)
         self._save()
         return count
 
@@ -140,5 +241,49 @@ class Registry:
         return all(event.get(k) == v for k, v in {"environment": environment, "overlay": overlay, "sandbox": sandbox, "task": task, "service": service, "slot": slot}.items())
 
     @staticmethod
+    def _same_service_scope(event: dict[str, Any], environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None) -> bool:
+        return all(event.get(k) == v for k, v in {"environment": environment, "overlay": overlay, "sandbox": sandbox, "task": task, "service": service}.items())
+
+    @staticmethod
     def _matches(event: dict[str, Any], scope: dict[str, str | None]) -> bool:
         return all(v is None or event.get(k) == v for k, v in scope.items())
+
+    @staticmethod
+    def _tombstone(event: dict[str, Any], reason: str) -> dict[str, Any]:
+        return asdict(RegistryEvent(
+            "tombstone",
+            str(event.get("key", "")),
+            None,
+            str(event.get("environment", "")),
+            event.get("overlay"),
+            event.get("sandbox"),
+            event.get("task"),
+            event.get("service"),
+            event.get("instance"),
+            event.get("slot"),
+            f"deleted:{reason}",
+            now().isoformat(),
+            None,
+            [],
+        ))
+
+
+def refresh_actions(contract: dict[str, Any], changed_key: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None) -> list[dict[str, Any]]:
+    """Return scope-confined actions for services depending on a changed source."""
+    actions = []
+    action_for_phase = {"setup": "restart", "build": "rebuild", "runtime": "restart", "hot": "hot-refresh"}
+    for service_name, service in (contract.get("services") or {}).items():
+        if not isinstance(service, dict):
+            continue
+        for requirement in service.get("requires", []):
+            if not isinstance(requirement, dict) or requirement.get("source") != changed_key:
+                continue
+            phase = str(requirement.get("phase", "runtime"))
+            actions.append({
+                "service": service_name,
+                "variable": requirement.get("name"),
+                "action": action_for_phase.get(phase, "restart"),
+                "phase": phase,
+                "scope": {"environment": environment, "overlay": overlay, "sandbox": sandbox, "task": task},
+            })
+    return actions

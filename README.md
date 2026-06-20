@@ -232,6 +232,14 @@ Do not copy the example literally. The example demonstrates the schema shape. A 
 
 Then it should generate a draft contract and report uncertain mappings for human review.
 
+The scanner supports coordinated multi-repository profiles by repeating `--repo`:
+
+```bash
+agent-vars scan --discover --repo ../frontend --repo ../api --repo ../workers --out agent-vars.workspace.json
+```
+
+Each repository keeps its own evidence while workspace service and runtime-dependency names are repository-qualified. Scanner evidence includes package build scripts, framework config references, CI environment matrices, Kubernetes secret/config references, Helm values, Terraform variables/outputs, cloud resource references, and credential paths.
+
 
 ## Human workflow: generated, not handwritten
 
@@ -453,6 +461,20 @@ Rules:
 - second instances become `candidate` or `replica` unless they explicitly take over the primary lease
 - expired leases mark outputs stale and block rebuilds unless policy allows stale reads
 - every trace includes the instance that published the value
+
+Lease and lifecycle commands:
+
+```bash
+agent-vars renew api-gateway.01HZZ6TJ7E7H6J7X4Y9R0J5A9M \
+  --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789 --service api-gateway --ttl 60s
+
+agent-vars actions --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789
+agent-vars ack-actions 0
+agent-vars expire
+agent-vars cleanup --environment dev --sandbox codex-workspace-abc123 --task task-789
+```
+
+Replica publications use `--slot replica` and are checked against the service's `instance_policy.replicas`; `--max-replicas` is available as an explicit runtime override. Publications queue dependency actions from requirement phase: `build` becomes `rebuild`, `hot` becomes `hot-refresh`, and setup/runtime become `restart`. Every queued action carries the exact environment, overlay, sandbox, and task scope and remains available until its publication index is acknowledged. Expiry marks outputs stale, removes scoped payloads, and retains value-free audit tombstones.
 
 ## Initial product workflow
 
