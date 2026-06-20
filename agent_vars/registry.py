@@ -46,6 +46,9 @@ class RegistryEvent:
     created_at: str
     expires_at: str | None = None
     actions: list[dict[str, Any]] = field(default_factory=list)
+    source: str | None = None
+    provider: str | None = None
+    phase: str | None = None
 
 
 class Registry:
@@ -54,7 +57,7 @@ class Registry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.data = self._load()
 
-    def publish(self, key: str, value: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, instance: str | None, slot: str | None, ttl: str | None, takeover: bool = False, max_replicas: int | None = 0, actions: list[dict[str, Any]] | None = None) -> RegistryEvent:
+    def publish(self, key: str, value: str, *, environment: str, overlay: str | None, sandbox: str | None, task: str | None, service: str | None, instance: str | None, slot: str | None, ttl: str | None, takeover: bool = False, max_replicas: int | None = 0, actions: list[dict[str, Any]] | None = None, source: str | None = None, provider: str | None = None, phase: str | None = "runtime") -> RegistryEvent:
         instance = instance or f"{service or 'instance'}.{secrets.token_hex(8)}"
         slot = slot or "primary"
         status = "active"
@@ -86,7 +89,13 @@ class Registry:
         for prior in self.data["events"]:
             if prior.get("instance") == instance and prior.get("key") == key and prior.get("status") == "active":
                 prior["status"] = "superseded"
-        event = RegistryEvent("publish", key, value, environment, overlay, sandbox, task, service, instance, slot, status, now().isoformat(), parse_ttl(ttl).isoformat() if ttl else None, actions or [])
+        event = RegistryEvent(
+            type="publish", key=key, value=value, environment=environment, overlay=overlay,
+            sandbox=sandbox, task=task, service=service, instance=instance, slot=slot,
+            status=status, created_at=now().isoformat(),
+            expires_at=parse_ttl(ttl).isoformat() if ttl else None, actions=actions or [],
+            source=source or key, provider=provider, phase=phase,
+        )
         self.data["events"].append(asdict(event))
         self._save()
         return event
@@ -110,8 +119,10 @@ class Registry:
             self._save()
             raise RegistryConflict(f"no active lease found for instance {instance}")
         self.data["events"].append(asdict(RegistryEvent(
-            "renew", "lease", None, environment, overlay, sandbox, task, service, instance, None,
-            "active", now().isoformat(), expires_at.isoformat(), [],
+            type="renew", key="lease", value=None, environment=environment, overlay=overlay,
+            sandbox=sandbox, task=task, service=service, instance=instance, slot=None,
+            status="active", created_at=now().isoformat(), expires_at=expires_at.isoformat(),
+            source="lease", phase="runtime",
         )))
         self._save()
         return renewed
@@ -126,6 +137,18 @@ class Registry:
             and self._matches(event, scope)
         ]
         return matches[-1] if matches else None
+
+    def diagnose(self, key: str, **scope: str | None) -> dict[str, Any] | None:
+        matches = [event for event in self.data["events"] if event.get("key") == key and self._matches(event, scope)]
+        if not matches:
+            return None
+        event = dict(matches[-1])
+        if event.get("type") == "publish" and self._expired(event) and event.get("status") == "active":
+            event["status"] = "stale"
+        if event.get("status") == "deleted:ttl_expired":
+            event["status"] = "stale"
+            event["deletion_reason"] = "ttl_expired"
+        return event
 
     def resolve_scoped(
         self,
@@ -251,20 +274,12 @@ class Registry:
     @staticmethod
     def _tombstone(event: dict[str, Any], reason: str) -> dict[str, Any]:
         return asdict(RegistryEvent(
-            "tombstone",
-            str(event.get("key", "")),
-            None,
-            str(event.get("environment", "")),
-            event.get("overlay"),
-            event.get("sandbox"),
-            event.get("task"),
-            event.get("service"),
-            event.get("instance"),
-            event.get("slot"),
-            f"deleted:{reason}",
-            now().isoformat(),
-            None,
-            [],
+            type="tombstone", key=str(event.get("key", "")), value=None,
+            environment=str(event.get("environment", "")), overlay=event.get("overlay"),
+            sandbox=event.get("sandbox"), task=event.get("task"), service=event.get("service"),
+            instance=event.get("instance"), slot=event.get("slot"), status=f"deleted:{reason}",
+            created_at=now().isoformat(), source=event.get("source") or event.get("key"),
+            provider=event.get("provider"), phase=event.get("phase"),
         ))
 
 

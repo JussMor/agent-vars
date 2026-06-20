@@ -35,6 +35,8 @@ class ResolvedValue:
     instance: str | None
     status: str
     resolved_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    error: str | None = None
+    hint: str | None = None
 
     def provenance(self, *, reveal: bool = False) -> dict[str, Any]:
         data = asdict(self)
@@ -117,7 +119,7 @@ def _resolve_requirement(
     }
     if source.startswith("file."):
         path = _file_mount_path(contract, source)
-        return ResolvedValue(value=path, layer="file_mount", provider=None, instance=None, status="resolved" if path else "missing", **common)
+        return ResolvedValue(value=path, layer="file_mount", provider=None, instance=None, status="resolved" if path else "missing", hint=None if path else "declare the file mount path under files", **common)
     if source.startswith("service."):
         event = registry.resolve_scoped(
             source,
@@ -126,19 +128,25 @@ def _resolve_requirement(
             sandbox=sandbox,
             task=task,
         )
+        diagnostic = event or registry.diagnose(source, environment=environment, overlay=overlay, sandbox=sandbox, task=task)
+        status = "resolved" if event else str(diagnostic.get("status", "missing")) if diagnostic else "missing"
+        if status.startswith("deleted"):
+            status = "stale"
         return ResolvedValue(
             value=event.get("value") if event else None,
             layer="registry",
             provider=None,
-            instance=event.get("instance") if event else None,
-            status="resolved" if event else "missing",
+            instance=diagnostic.get("instance") if diagnostic else None,
+            status=status,
+            hint=None if event else "publish or renew the service output in the selected scope",
             **common,
         )
 
     for layer in LAYER_ORDER:
         value = _layer_value(layers.get(layer), name, service_name)
         if value is not None:
-            return ResolvedValue(value=str(value), layer=layer, provider=None, instance=None, status="resolved", **common)
+            layer_provider = _environment_provider(contract, environment) if layer == "provider_secret" else None
+            return ResolvedValue(value=str(value), layer=layer, provider=layer_provider, instance=None, status="resolved", **common)
 
     runtime_env = _runtime_env_name(contract, source)
     if runtime_env and runtime_env in os.environ:
@@ -152,11 +160,14 @@ def _resolve_requirement(
         if isinstance(provider, dict):
             try:
                 value = get_secret(provider_name, provider, secret_name)
-            except Exception:
-                value = None
+            except Exception as exc:
+                return ResolvedValue(
+                    value=None, layer="provider_secret", provider=provider_name, instance=None,
+                    status="error", error=str(exc), hint=f"check provider profile {provider_name} credentials and resource mapping", **common,
+                )
             if value is not None:
                 return ResolvedValue(value=value, layer="provider_secret", provider=provider_name, instance=None, status="resolved", **common)
-    return ResolvedValue(value=None, layer="unresolved", provider=provider_name, instance=None, status="missing", **common)
+    return ResolvedValue(value=None, layer="unresolved", provider=provider_name, instance=None, status="missing", hint=_missing_hint(source, provider_name), **common)
 
 
 def _layer_value(layer: Any, name: str, service: str) -> Any:
@@ -229,3 +240,17 @@ def _provider_binding(contract: dict[str, Any], environment: str | None, source:
     if ".secret_manager." in source:
         return str(provider_name), source.split(".secret_manager.", 1)[1]
     return str(provider_name), name
+
+
+def _missing_hint(source: str, provider_name: str | None) -> str:
+    if source.startswith("runtime."):
+        return "start the runtime dependency or provide its output in a value layer"
+    if provider_name:
+        return f"create/map the secret in provider profile {provider_name} or provide an override"
+    return "provide the value in task, sandbox, overlay, environment, provider, or repository defaults"
+
+
+def _environment_provider(contract: dict[str, Any], environment: str | None) -> str | None:
+    env = (contract.get("environments") or {}).get(environment, {}) if environment else {}
+    value = env.get("provider_profile") if isinstance(env, dict) else None
+    return str(value) if value else None

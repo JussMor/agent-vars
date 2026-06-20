@@ -11,6 +11,9 @@ class ContractError(ValueError):
     """Raised when a contract cannot be loaded or validated."""
 
 
+PROVIDER_KINDS = {"gcp", "cloudflare", "doppler", "vault", "aws", "kubernetes", "local", "local-encrypted"}
+
+
 @dataclass(frozen=True)
 class ValidationIssue:
     level: str
@@ -48,6 +51,18 @@ def validate_contract(contract: dict[str, Any], *, environment: str | None = Non
     if providers is not None and not isinstance(providers, dict):
         issues.append(ValidationIssue("error", "providers", "providers must be a mapping"))
         providers = {}
+    if isinstance(providers, dict):
+        for provider_name, provider in providers.items():
+            provider_path = f"providers.{provider_name}"
+            if not isinstance(provider, dict):
+                issues.append(ValidationIssue("error", provider_path, "provider must be a mapping"))
+                continue
+            kind = provider.get("kind")
+            if kind not in PROVIDER_KINDS:
+                issues.append(ValidationIssue("error", f"{provider_path}.kind", f"unsupported provider kind {kind!r}", f"choose one of {', '.join(sorted(PROVIDER_KINDS))}"))
+            required_key = {"gcp": "project_id", "vault": "path", "local": "path", "local-encrypted": "path"}.get(kind)
+            if required_key and not provider.get(required_key) and not provider.get("fixture"):
+                issues.append(ValidationIssue("error", f"{provider_path}.{required_key}", "required provider setting is missing", f"set {required_key} or configure a deterministic fixture"))
 
     for env_name, env in envs.items():
         if not isinstance(env, dict):

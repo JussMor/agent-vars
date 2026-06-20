@@ -25,6 +25,7 @@ def approve_suggestions(
     approvals_path: Path,
     *,
     approve_all: bool = False,
+    allow_production: bool = False,
 ) -> list[dict[str, Any]]:
     suggestions = read_state(suggestions_path, None)
     if suggestions is None:
@@ -40,7 +41,11 @@ def approve_suggestions(
     for suggestion in suggestions:
         if not isinstance(suggestion, dict):
             continue
+        if not suggestion.get("suggested_source"):
+            continue
         if not approve_all and suggestion.get("confidence") != "high":
+            continue
+        if suggestion.get("production_impact") and not allow_production:
             continue
         item = dict(suggestion)
         item["status"] = "approved"

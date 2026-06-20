@@ -46,3 +46,10 @@ def test_unknown_environment_provider_is_rejected():
     contract["environments"]["dev"]["provider_profile"] = "missing"
     issues = validate_contract(contract)
     assert any("unknown provider profile" in issue.message for issue in issues)
+
+
+def test_unknown_provider_kind_has_actionable_error():
+    contract = load_contract(EXAMPLE)
+    contract["providers"]["custom"] = {"kind": "unknown"}
+    issues = validate_contract(contract)
+    assert any("unsupported provider kind" in issue.message and issue.hint for issue in issues)

@@ -554,22 +554,47 @@ python3 -m venv .venv
 
 ## Provider suggestions and runtime registry
 
-The coding-phase implementation also includes provider-guided suggestions and a scoped runtime registry for preview values. `suggest` can inspect supported provider profiles (`gcp`, `doppler`, and `local`) and propose bindings with confidence/evidence instead of silently wiring low-confidence mappings.
+The implementation includes provider-guided suggestions and a scoped runtime registry for preview values. Provider kinds are `gcp`, `cloudflare`, `doppler`, `vault`, `aws`, `kubernetes`, `local`, and `local-encrypted`. Cloudflare supports metadata discovery only because deployed Worker secret payloads are write-only.
+
+```yaml
+providers:
+  worker:
+    kind: cloudflare
+    name: api-worker
+  platform-vault:
+    kind: vault
+    path: secret/platform
+  aws-prod:
+    kind: aws
+    region: us-east-1
+  cluster:
+    kind: kubernetes
+    namespace: platform
+  encrypted-dev:
+    kind: local-encrypted
+    path: .secrets/dev.json.age
+    identity: ~/.config/age/keys.txt
+    format: json
+```
 
 ```bash
 agent-vars --contract agent-vars.example.yaml suggest --provider gcp-dev
+agent-vars --contract agent-vars.example.yaml resources --environment dev
+agent-vars --contract agent-vars.example.yaml suggest --environment dev
 agent-vars --contract agent-vars.example.yaml approve
 agent-vars --contract agent-vars.example.yaml sync --provider gcp-dev
 agent-vars publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789 --service api-gateway --ttl 2h
 agent-vars trace service.api-gateway.primary.url --environment dev --overlay preview --sandbox codex-workspace-abc123
-agent-vars events --sandbox codex-workspace-abc123
+agent-vars events --sandbox codex-workspace-abc123 --type publish
 agent-vars doctor frontend --environment dev --overlay preview
-agent-vars diff qa prod --service api-gateway
+agent-vars diff qa prod --service api-gateway --left-values qa-values.json --right-values prod-values.json
 ```
 
-For deterministic CI and local tests, provider adapters accept metadata fixtures through `AGENT_VARS_GCP_SECRETS_FILE` and `AGENT_VARS_DOPPLER_SECRETS_FILE`, and GCP payload fixtures through `AGENT_VARS_GCP_VALUES_FILE`. Without fixtures, GCP uses `gcloud secrets list` and `gcloud secrets versions access`; Doppler uses `doppler secrets download`. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
+Provider adapters use their standard CLIs: `gcloud`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
 
-Suggestions are written to `.agent-vars/suggestions.json`. `approve` approves only high-confidence mappings unless `--all` is explicitly supplied. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads.
+Suggestions are written to `.agent-vars/suggestions.json` with confidence, evidence, environment, and production impact. `approve` accepts high-confidence non-production mappings by default. Low-confidence mappings require `--all`; production mappings independently require `--allow-production`. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads.
+
+`doctor`, `trace`, and `events` redact values by default. Use `--reveal` only in a private terminal. Diagnostics distinguish missing, malformed, stale, provider-error, and conflicting values and include remediation hints. `diff --service` compares value fingerprints and provenance without emitting secret values.
 
 Publishing a second primary instance in the same scope fails while the first lease is active. Use `--takeover` only when replacing that primary is intentional.
 

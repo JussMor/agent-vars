@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 from agent_vars.cli import main
+from agent_vars.contract import load_contract
 
 
 EXAMPLE = Path("agent-vars.example.yaml").resolve()
@@ -62,3 +63,50 @@ def test_publish_renew_actions_and_cleanup_commands(tmp_path, monkeypatch, capsy
 
     assert main(["--contract", str(EXAMPLE), "cleanup", *scope]) == 0
     assert "deleted: 1" in capsys.readouterr().out
+
+
+def test_resources_and_suggestions_select_provider_from_environment(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "provider.json"
+    fixture.write_text('{"NATS_URL":"secret"}', encoding="utf-8")
+    contract = load_contract(EXAMPLE)
+    contract["providers"]["gcp-dev"]["fixture"] = str(fixture)
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    assert main(["--contract", str(contract_path), "resources", "--environment", "dev"]) == 0
+    resources = json.loads(capsys.readouterr().out)
+    assert resources[0]["name"] == "NATS_URL"
+
+    suggestions_path = tmp_path / "suggestions.json"
+    assert main(["--contract", str(contract_path), "suggest", "--environment", "dev", "--out", str(suggestions_path)]) == 0
+    suggestions = json.loads(capsys.readouterr().out)
+    assert any(item["required"] == "NATS_URL" and item["environment"] == "dev" for item in suggestions)
+
+
+def test_trace_and_events_redact_values_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_VARS_REGISTRY", str(tmp_path / "registry.json"))
+    scope = ["--environment", "dev", "--overlay", "preview", "--sandbox", "s1", "--task", "t1"]
+    assert main(["--contract", str(EXAMPLE), "publish", "service.api.url", "https://secret", *scope, "--service", "api", "--instance", "api.1"]) == 0
+    capsys.readouterr()
+    assert main(["--contract", str(EXAMPLE), "trace", "service.api.url", *scope]) == 0
+    assert json.loads(capsys.readouterr().out)["value"] == "<redacted>"
+    assert main(["--contract", str(EXAMPLE), "events", *scope, "--type", "publish"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["value"] == "<redacted>"
+
+
+def test_diff_compares_values_without_revealing_them(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    left = tmp_path / "left.json"
+    right = tmp_path / "right.json"
+    left.write_text('{"environment_value":{"NATS_URL":"nats://left"}}', encoding="utf-8")
+    right.write_text('{"environment_value":{"NATS_URL":"nats://right"}}', encoding="utf-8")
+    assert main([
+        "--contract", str(EXAMPLE), "diff", "dev", "qa", "--service", "api-gateway",
+        "--left-values", str(left), "--right-values", str(right),
+    ]) == 0
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert next(item for item in result["values"] if item["name"] == "NATS_URL")["value_changed"] is True
+    assert "nats://left" not in output

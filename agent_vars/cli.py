@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .contract import as_json, contract_summary, load_contract, materialize_service, validate_contract
+from .diagnostics import diagnose_service, diff_values, redact_event
 from .providers import list_secrets, suggest_bindings
 from .registry import Registry, refresh_actions
 from .resolution import missing_required, resolve_service
@@ -48,18 +49,28 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--mount-root", help="Materialize declared file mounts beneath this root")
 
     suggest = sub.add_parser("suggest", help="Suggest provider bindings for required variables")
-    suggest.add_argument("--provider", required=True, help="Provider profile name from the contract")
+    suggest_source = suggest.add_mutually_exclusive_group(required=True)
+    suggest_source.add_argument("--provider", help="Provider profile name from the contract")
+    suggest_source.add_argument("--environment", help="Select the environment's provider profile")
     suggest.add_argument("--out", default=str(DEFAULT_STATE_DIR / "suggestions.json"), help="Suggestion state file")
 
     approve = sub.add_parser("approve", help="Approve saved provider suggestions")
     approve.add_argument("--suggestions", default=str(DEFAULT_STATE_DIR / "suggestions.json"))
     approve.add_argument("--out", default=str(DEFAULT_STATE_DIR / "approvals.json"))
     approve.add_argument("--all", action="store_true", help="Also approve medium/low-confidence mappings")
+    approve.add_argument("--allow-production", action="store_true", help="Explicitly approve production-impacting mappings")
 
     sync = sub.add_parser("sync", help="Synchronize approved bindings with provider metadata")
-    sync.add_argument("--provider", required=True, help="Provider profile name from the contract")
+    sync_source = sync.add_mutually_exclusive_group(required=True)
+    sync_source.add_argument("--provider", help="Provider profile name from the contract")
+    sync_source.add_argument("--environment", help="Select the environment's provider profile")
     sync.add_argument("--approvals", default=str(DEFAULT_STATE_DIR / "approvals.json"))
     sync.add_argument("--out", help="Sync state file; defaults to .agent-vars/sync-<provider>.json")
+
+    resources = sub.add_parser("resources", help="List provider resources and metadata")
+    resource_source = resources.add_mutually_exclusive_group(required=True)
+    resource_source.add_argument("--provider")
+    resource_source.add_argument("--environment")
 
     publish = sub.add_parser("publish", help="Publish a scoped ephemeral runtime value")
     publish.add_argument("key")
@@ -75,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--ttl", default="2h")
     publish.add_argument("--takeover", action="store_true", help="Explicitly replace another active primary lease")
     publish.add_argument("--max-replicas", type=int, help="Override the service replica limit")
+    publish.add_argument("--source", help="Provenance source; defaults to the published key")
+    publish.add_argument("--provider", help="Provenance provider profile")
+    publish.add_argument("--phase", choices=("setup", "build", "runtime", "hot"), default="runtime")
 
     renew = sub.add_parser("renew", help="Renew all active outputs for an instance lease")
     renew.add_argument("instance")
@@ -92,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace.add_argument("--sandbox")
     trace.add_argument("--task")
     trace.add_argument("--service")
+    trace.add_argument("--reveal", action="store_true", help="Reveal the stored value")
 
     events = sub.add_parser("events", help="List registry events")
     events.add_argument("--environment")
@@ -99,6 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--sandbox")
     events.add_argument("--task")
     events.add_argument("--service")
+    events.add_argument("--status")
+    events.add_argument("--type")
+    events.add_argument("--reveal", action="store_true", help="Reveal stored values")
 
     actions = sub.add_parser("actions", help="List scope-confined rebuild, restart, and hot-refresh actions")
     actions.add_argument("--environment")
@@ -131,6 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("left")
     diff.add_argument("right")
     diff.add_argument("--service")
+    diff.add_argument("--overlay")
+    diff.add_argument("--sandbox")
+    diff.add_argument("--task")
+    diff.add_argument("--left-values")
+    diff.add_argument("--right-values")
 
     return parser
 
@@ -180,8 +203,10 @@ def main(argv: list[str] | None = None) -> int:
                     layers=_read_json(args.values),
                 )
                 missing = missing_required(service, resolved, args.phase)
-                if missing:
-                    print(f"missing required values: {', '.join(missing)}", file=sys.stderr)
+                diagnostics = [item for item in diagnose_service(contract, args.service, resolved) if not args.phase or item.phase == args.phase]
+                if missing or diagnostics:
+                    for diagnostic in diagnostics:
+                        print(f"{diagnostic.level}: {diagnostic.service}.{diagnostic.variable}: {diagnostic.message} fix: {diagnostic.hint}", file=sys.stderr)
                     return 1
             print("contract valid")
             return 0
@@ -223,34 +248,33 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "suggest":
-            providers = contract.get("providers", {})
-            provider = providers.get(args.provider) if isinstance(providers, dict) else None
-            if not isinstance(provider, dict):
-                raise ValueError(f"unknown provider: {args.provider}")
-            suggestions = suggest_bindings(contract, args.provider, list_secrets(args.provider, provider))
+            provider_name, provider = _select_provider(contract, args.provider, args.environment)
+            suggestions = suggest_bindings(contract, provider_name, list_secrets(provider_name, provider), environment=args.environment)
             write_state(Path(args.out), suggestions)
             sys.stdout.write(as_json(suggestions))
             return 0
 
         if args.command == "approve":
-            approvals = approve_suggestions(Path(args.suggestions), Path(args.out), approve_all=args.all)
+            approvals = approve_suggestions(Path(args.suggestions), Path(args.out), approve_all=args.all, allow_production=args.allow_production)
             sys.stdout.write(as_json(approvals))
             return 0
 
         if args.command == "sync":
-            providers = contract.get("providers", {})
-            provider = providers.get(args.provider) if isinstance(providers, dict) else None
-            if not isinstance(provider, dict):
-                raise ValueError(f"unknown provider: {args.provider}")
-            sync_path = Path(args.out) if args.out else DEFAULT_STATE_DIR / f"sync-{args.provider}.json"
-            result = sync_provider_metadata(args.provider, list_secrets(args.provider, provider), Path(args.approvals), sync_path)
+            provider_name, provider = _select_provider(contract, args.provider, args.environment)
+            sync_path = Path(args.out) if args.out else DEFAULT_STATE_DIR / f"sync-{provider_name}.json"
+            result = sync_provider_metadata(provider_name, list_secrets(provider_name, provider), Path(args.approvals), sync_path)
             sys.stdout.write(as_json(result))
+            return 0
+
+        if args.command == "resources":
+            provider_name, provider = _select_provider(contract, args.provider, args.environment)
+            sys.stdout.write(as_json([secret.__dict__ for secret in list_secrets(provider_name, provider)]))
             return 0
 
         if args.command == "publish":
             replica_limit = args.max_replicas if args.max_replicas is not None else _replica_limit(contract, args.service)
             actions = refresh_actions(contract, args.key, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task)
-            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover, max_replicas=replica_limit, actions=actions)
+            event = Registry().publish(args.key, args.value, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service, instance=args.instance, slot=args.slot, ttl=args.ttl, takeover=args.takeover, max_replicas=replica_limit, actions=actions, source=args.source, provider=args.provider, phase=args.phase)
             sys.stdout.write(as_json(event.__dict__))
             return 0
 
@@ -260,12 +284,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "trace":
-            event = Registry().trace(args.key, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service)
-            sys.stdout.write(as_json(event or {}))
+            event = Registry().diagnose(args.key, environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service)
+            sys.stdout.write(as_json(redact_event(event, reveal=args.reveal) if event else {}))
             return 0
 
         if args.command == "events":
-            sys.stdout.write(as_json(Registry().events(environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service)))
+            events_result = Registry().events(environment=args.environment, overlay=args.overlay, sandbox=args.sandbox, task=args.task, service=args.service)
+            if args.status:
+                events_result = [event for event in events_result if event.get("status") == args.status]
+            if args.type:
+                events_result = [event for event in events_result if event.get("type") == args.type]
+            sys.stdout.write(as_json([redact_event(event, reveal=args.reveal) for event in events_result]))
             return 0
 
         if args.command == "actions":
@@ -300,19 +329,26 @@ def main(argv: list[str] | None = None) -> int:
                 layers=_read_json(args.values),
             )
             missing = missing_required(service, resolved)
+            diagnostics = diagnose_service(contract, args.service, resolved)
             sys.stdout.write(as_json({
                 "service": args.service,
                 "issues": [i.__dict__ for i in issues],
                 "missing": missing,
+                "diagnostics": [item.as_dict() for item in diagnostics],
                 "values": {name: value.provenance(reveal=args.reveal) for name, value in resolved.items()},
             }))
-            return 1 if any(i.level == "error" for i in issues) or missing else 0
+            return 1 if any(i.level == "error" for i in issues) or diagnostics else 0
 
         if args.command == "diff":
             envs = contract.get("environments", {})
             left = envs.get(args.left, {}) if isinstance(envs, dict) else {}
             right = envs.get(args.right, {}) if isinstance(envs, dict) else {}
-            sys.stdout.write(as_json({"left": args.left, "right": args.right, "provider_profile_changed": left.get("provider_profile") != right.get("provider_profile"), "left_provider": left.get("provider_profile"), "right_provider": right.get("provider_profile"), "service": args.service}))
+            result = {"left": args.left, "right": args.right, "provider_profile_changed": left.get("provider_profile") != right.get("provider_profile"), "left_provider": left.get("provider_profile"), "right_provider": right.get("provider_profile"), "service": args.service}
+            if args.service:
+                left_resolved = resolve_service(contract, args.service, environment=args.left, overlay=args.overlay, sandbox=args.sandbox, task=args.task, layers=_read_json(args.left_values))
+                right_resolved = resolve_service(contract, args.service, environment=args.right, overlay=args.overlay, sandbox=args.sandbox, task=args.task, layers=_read_json(args.right_values))
+                result["values"] = diff_values(left_resolved, right_resolved)
+            sys.stdout.write(as_json(result))
             return 0
     except Exception as exc:
         print(f"agent-vars: {exc}", file=sys.stderr)
@@ -339,6 +375,22 @@ def _replica_limit(contract: dict[str, object], service_name: str | None) -> int
         return max(0, int(replicas))
     except (TypeError, ValueError):
         return 0
+
+
+def _select_provider(contract: dict[str, object], provider_name: str | None, environment: str | None) -> tuple[str, dict[str, object]]:
+    if environment:
+        environments = contract.get("environments", {})
+        env = environments.get(environment) if isinstance(environments, dict) else None
+        if not isinstance(env, dict):
+            raise ValueError(f"unknown environment: {environment}")
+        provider_name = env.get("provider_profile")
+        if not provider_name:
+            raise ValueError(f"environment has no provider profile: {environment}")
+    providers = contract.get("providers", {})
+    provider = providers.get(provider_name) if isinstance(providers, dict) else None
+    if not isinstance(provider_name, str) or not isinstance(provider, dict):
+        raise ValueError(f"unknown provider: {provider_name}")
+    return provider_name, provider
 
 
 if __name__ == "__main__":  # pragma: no cover
