@@ -9,10 +9,10 @@ Build a service and CLI that let enterprise repositories declare, validate, mate
 The roadmap below describes the complete product. Each milestone item is marked individually. `[x]` means implemented and tested; `[ ]` means incomplete, with partial implementations called out explicitly.
 
 - Milestone 1: complete foundation
-- Milestone 2: partial
+- Milestone 2: complete
 - Milestone 3: complete
 - Milestone 4: complete
-- Milestone 5: partial
+- Milestone 5: complete
 - Milestone 6: partial
 - Milestone 7: partial
 - Milestone 8: pending
@@ -22,8 +22,8 @@ The roadmap below describes the complete product. Each milestone item is marked 
 - [x] Resolve and inject actual scalar values using documented task/sandbox/overlay/environment/provider/default precedence
 - [x] Fetch provider secret payloads for implemented adapters without persisting them in workflow metadata
 - [ ] Materialize file-secret payloads atomically, validate formats/policies, set permissions, and manage mount lifecycle — partial: atomic writes, JSON validation, mount-root confinement, and `0600` permissions are implemented; policy and lifecycle cleanup remain
-- [ ] Expand scanner parsing for Kubernetes, Helm, Terraform outputs, cloud outputs, and CI matrices beyond evidence detection
-- [ ] Add renewable leases, replica policy enforcement, service-output schemas, tombstones, and dependent rebuild/restart/hot-refresh hooks
+- [x] Expand scanner parsing for Kubernetes, Helm, Terraform outputs, cloud outputs, and CI matrices beyond evidence detection
+- [ ] Add service-output schemas — renewable leases, replica policy enforcement, tombstones, and scoped dependent action queues are implemented
 - [ ] Add complete provenance to every resolved value and value-aware environment diffs
 - [ ] Add Vault, AWS Secrets Manager, Kubernetes Secrets, Cloudflare secrets, and encrypted-local provider adapters
 - [ ] Add approval policies, reviewer enforcement, public-secret leak detection, audit export, and CI status checks
@@ -55,15 +55,15 @@ Agent Vars should manage:
 
 ### Milestone 2: Repo scanner and profile generator
 
-- [ ] detect service roots in monorepos and multi-repo workspaces — partial: monorepo roots are discovered; coordinated multi-repo workspace profiles are not implemented
+- [x] detect service roots in monorepos and multi-repo workspaces
 - [x] detect frontend frameworks and public env prefixes such as `VITE_` and `NEXT_PUBLIC_`
-- [ ] detect env usage in code, including `process.env`, `import.meta.env`, framework config, and build scripts — partial: direct JavaScript/TypeScript/Python references are detected; framework config and build-script parsing remain
+- [x] detect env usage in code, including `process.env`, `import.meta.env`, framework config, and build scripts
 - [x] detect existing `.env*` files and templates
 - [x] detect Docker Compose runtime dependencies such as NATS, Redis, MongoDB, and Postgres
-- [ ] detect Kubernetes, Helm, Terraform, and cloud output references — partial: manifest files are inventoried, but references and outputs are not parsed
-- [ ] detect CI/CD environment matrices such as `dev`, `qa`, `stage`, `uat`, and `prod` — partial: environment-name evidence is detected; matrix structure is not parsed
+- [x] detect Kubernetes, Helm, Terraform, and cloud output references
+- [x] detect CI/CD environment matrices such as `dev`, `qa`, `stage`, `uat`, and `prod`
 - [x] detect Dockerfile patterns such as `Dockerfile.server`
-- [ ] detect existing credential paths such as `/app/gcp-credentials` and `/app/.config/gcloud`
+- [x] detect existing credential paths such as `/app/gcp-credentials` and `/app/.config/gcloud`
 - [x] produce a draft contract with uncertain mappings marked for review
 
 ### Milestone 3: Contract validator
@@ -89,10 +89,10 @@ Agent Vars should manage:
 - [x] accept service outputs from ephemeral containers through `publish`
 - [x] assign every publisher a unique instance identity
 - [x] store generated values by environment, overlay, sandbox, task, service, and instance scope
-- [ ] support primary leases and optional replicas — partial: primary conflict/takeover behavior exists; replica policy enforcement does not
-- [ ] mark outputs stale when leases expire — expired values are excluded and can be marked `expired`, but renewable lease/stale semantics remain
-- [ ] apply TTL-based deletion for task-scoped and sandbox-scoped values — TTL expiry exists; deletion and tombstone retention do not
-- [ ] trigger rebuild, restart, or hot refresh only inside the affected scope
+- [x] support renewable primary leases and policy-limited optional replicas
+- [x] mark outputs stale when leases expire
+- [x] apply TTL-based deletion for task-scoped and sandbox-scoped values while retaining value-free tombstones
+- [x] queue rebuild, restart, or hot refresh actions only inside the affected scope
 - [x] prevent duplicate instances from silently overwriting primary outputs
 - [x] never write generated task-local values back into shared provider secrets
 
