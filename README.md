@@ -490,6 +490,38 @@ python -m agent_vars.cli --contract agent-vars.example.yaml materialize api-gate
 
 The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
 
+Resolve actual values and fail when required values are missing:
+
+```bash
+agent-vars --contract agent-vars.example.yaml validate \
+  --environment dev --overlay preview --service api-gateway --phase runtime \
+  --values values.json
+
+agent-vars --contract agent-vars.example.yaml materialize api-gateway \
+  --environment dev --overlay preview --values values.json --strict --dry-run
+```
+
+The values file uses the documented precedence layers. Values may be global or nested under a service name:
+
+```json
+{
+  "task_override": {"NATS_URL": "nats://task"},
+  "sandbox_override": {},
+  "overlay_value": {},
+  "environment_value": {"api-gateway": {"REDIS_URL": "redis://dev"}},
+  "provider_secret": {},
+  "repo_default": {}
+}
+```
+
+File secrets can be fetched from the environment's provider profile or supplied through `--file-values` for local automation. Declared absolute paths are mapped beneath `--mount-root`, confined to that root, written atomically, validated as JSON when declared, and assigned `0600` permissions:
+
+```bash
+agent-vars --contract agent-vars.example.yaml materialize api-gateway \
+  --environment dev --overlay preview --values values.json --strict \
+  --file-values file-values.json --mount-root .agent-vars/mounts --out .agent-vars/api-gateway.env
+```
+
 Install the CLI and development dependencies with:
 
 ```bash
@@ -513,7 +545,7 @@ agent-vars doctor frontend --environment dev --overlay preview
 agent-vars diff qa prod --service api-gateway
 ```
 
-For deterministic CI and local tests, provider adapters accept JSON fixture files through `AGENT_VARS_GCP_SECRETS_FILE` and `AGENT_VARS_DOPPLER_SECRETS_FILE`. Without fixtures, the GCP adapter shells out to `gcloud secrets list`, and the Doppler adapter shells out to `doppler secrets download`.
+For deterministic CI and local tests, provider adapters accept metadata fixtures through `AGENT_VARS_GCP_SECRETS_FILE` and `AGENT_VARS_DOPPLER_SECRETS_FILE`, and GCP payload fixtures through `AGENT_VARS_GCP_VALUES_FILE`. Without fixtures, GCP uses `gcloud secrets list` and `gcloud secrets versions access`; Doppler uses `doppler secrets download`. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
 
 Suggestions are written to `.agent-vars/suggestions.json`. `approve` approves only high-confidence mappings unless `--all` is explicitly supplied. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads.
 
