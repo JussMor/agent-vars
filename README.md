@@ -477,3 +477,30 @@ agent-vars doctor frontend --environment dev --overlay preview
 - track env errors to service, source, provider, phase, sandbox, and instance
 - detect stale or conflicting values before build/runtime
 - support existing cloud secret managers instead of replacing them
+
+## Coding-phase CLI
+
+This repository now includes an initial Python implementation of the `agent-vars` command. It focuses on the first usable coding phase from the plan: loading the repository contract, validating declared environments and overlays, checking service requirements against runtime/file/service sources, summarizing discovered contract shape, and rendering service-specific `.env` output without embedding file-secret contents.
+
+```bash
+python -m agent_vars.cli --contract agent-vars.example.yaml scan
+python -m agent_vars.cli --contract agent-vars.example.yaml validate --environment dev --overlay preview
+python -m agent_vars.cli --contract agent-vars.example.yaml materialize api-gateway --dry-run
+```
+
+The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
+
+## Provider suggestions and runtime registry
+
+The coding-phase implementation also includes provider-guided suggestions and a scoped runtime registry for preview values. `suggest` can inspect supported provider profiles (`gcp`, `doppler`, and `local`) and propose bindings with confidence/evidence instead of silently wiring low-confidence mappings.
+
+```bash
+agent-vars --contract agent-vars.example.yaml suggest --provider gcp-dev
+agent-vars publish service.api-gateway.primary.url https://api-gateway-abc123.example.dev --environment dev --overlay preview --sandbox codex-workspace-abc123 --task task-789 --service api-gateway --ttl 2h
+agent-vars trace service.api-gateway.primary.url --environment dev --overlay preview --sandbox codex-workspace-abc123
+agent-vars events --sandbox codex-workspace-abc123
+agent-vars doctor frontend --environment dev --overlay preview
+agent-vars diff qa prod --service api-gateway
+```
+
+For deterministic CI and local tests, provider adapters accept JSON fixture files through `AGENT_VARS_GCP_SECRETS_FILE` and `AGENT_VARS_DOPPLER_SECRETS_FILE`. Without fixtures, the GCP adapter shells out to `gcloud secrets list`, and the Doppler adapter shells out to `doppler secrets download`.
