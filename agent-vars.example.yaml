@@ -1,0 +1,184 @@
+version: 1
+project: enterprise-platform
+
+repo:
+  topology: monorepo
+  service_discovery:
+    - name: frontend
+      root: frontend
+      kind: frontend
+      framework: vite
+    - name: api-gateway
+      root: api-gateway
+      kind: api
+    - name: api-gateway-mobile
+      root: api-gateway-mobile
+      kind: api
+    - name: microservices
+      root: services
+      kind: service-group
+      discovery:
+        dockerfile_pattern: Dockerfile.server
+        service_path_pattern: "services/*"
+
+environments:
+  dev:
+    provider_profile: gcp-dev
+  qa:
+    provider_profile: gcp-qa
+  stage:
+    provider_profile: gcp-stage
+  uat:
+    provider_profile: gcp-uat
+  prod:
+    provider_profile: gcp-prod
+
+overlays:
+  preview:
+    inherits: dev
+    ephemeral: true
+    dynamic_outputs: true
+    value_scope:
+      default: sandbox
+      ttl: 2h
+      on_complete: delete
+      provider_writeback: disabled
+
+value_resolution:
+  precedence:
+    - task_override
+    - sandbox_override
+    - overlay_value
+    - environment_value
+    - provider_secret
+    - repo_default
+
+providers:
+  gcp-dev:
+    kind: gcp
+    project_id: company-dev
+  gcp-qa:
+    kind: gcp
+    project_id: company-qa
+  gcp-stage:
+    kind: gcp
+    project_id: company-stage
+  gcp-uat:
+    kind: gcp
+    project_id: company-uat
+  gcp-prod:
+    kind: gcp
+    project_id: company-prod
+  doppler:
+    kind: doppler
+    optional: true
+    phase: future
+
+runtime_dependencies:
+  nats:
+    source: compose.service.nats
+    outputs:
+      url: NATS_URL
+  redis:
+    source: compose.service.redis
+    outputs:
+      url: REDIS_URL
+  mongodb:
+    source: compose.service.mongodb
+    outputs:
+      uri: MONGODB_URI
+
+files:
+  gcp_service_account:
+    source: gcp.secret_manager.service-account-json
+    format: json
+    mount:
+      path: /app/gcp-credentials/service-account.json
+      env: GOOGLE_APPLICATION_CREDENTIALS
+
+services:
+  frontend:
+    root: frontend
+    framework: vite
+    instance_policy:
+      primary: required
+      replicas: 0
+    env_files:
+      - frontend/.env.local
+    requires:
+      - name: VITE_BASE_API_URL
+        source: service.api-gateway.primary.url
+        visibility: public
+        phase: build
+        required: true
+      - name: VITE_MOBILE_API_URL
+        source: service.api-gateway-mobile.primary.url
+        visibility: public
+        phase: build
+        required: false
+
+  api-gateway:
+    root: api-gateway
+    instance_policy:
+      primary: required
+      replicas: 0
+      lease_ttl_seconds: 60
+    env_files:
+      - api-gateway/.env
+      - api-gateway/.env.preview
+    requires:
+      - name: NATS_URL
+        source: runtime.nats.url
+        visibility: internal
+        phase: runtime
+        required: true
+      - name: REDIS_URL
+        source: runtime.redis.url
+        visibility: internal
+        phase: runtime
+        required: true
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        source: file.gcp_service_account.mount.path
+        visibility: file-secret
+        phase: setup
+        required: true
+
+  api-gateway-mobile:
+    root: api-gateway-mobile
+    instance_policy:
+      primary: required
+      replicas: 0
+      lease_ttl_seconds: 60
+    env_files:
+      - api-gateway-mobile/.env
+    requires:
+      - name: NATS_URL
+        source: runtime.nats.url
+        visibility: internal
+        phase: runtime
+        required: true
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        source: file.gcp_service_account.mount.path
+        visibility: file-secret
+        phase: runtime
+        required: true
+
+  catalog-service:
+    root: services/catalog
+    discovered_from: services/*/Dockerfile.server
+    instance_policy:
+      primary: optional
+      replicas: many
+    env_files:
+      - services/catalog/.env
+    requires:
+      - name: MONGODB_URI
+        source: runtime.mongodb.uri
+        visibility: secret
+        phase: runtime
+        required: true
+      - name: NATS_URL
+        source: runtime.nats.url
+        visibility: internal
+        phase: runtime
+        required: true
