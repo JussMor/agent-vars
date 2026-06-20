@@ -20,6 +20,25 @@ def read_state(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def approved_binding_map(path: Path, *, environment: str | None = None) -> dict[tuple[str, str], str]:
+    approvals = read_state(path, [])
+    if not isinstance(approvals, list):
+        raise ValueError(f"approvals file must contain a JSON list: {path}")
+    bindings: dict[tuple[str, str], str] = {}
+    for item in approvals:
+        if not isinstance(item, dict) or item.get("status") != "approved":
+            continue
+        item_environment = item.get("environment")
+        if item_environment and item_environment != environment:
+            continue
+        service = item.get("service")
+        required = item.get("required")
+        source = item.get("suggested_source")
+        if all(isinstance(value, str) and value for value in (service, required, source)):
+            bindings[(service, required)] = source
+    return bindings
+
+
 def approve_suggestions(
     suggestions_path: Path,
     approvals_path: Path,
@@ -36,7 +55,7 @@ def approve_suggestions(
     approved = read_state(approvals_path, [])
     if not isinstance(approved, list):
         approved = []
-    by_binding = {(item.get("service"), item.get("required")): item for item in approved if isinstance(item, dict)}
+    by_binding = {(item.get("environment"), item.get("service"), item.get("required")): item for item in approved if isinstance(item, dict)}
     timestamp = datetime.now(timezone.utc).isoformat()
     for suggestion in suggestions:
         if not isinstance(suggestion, dict):
@@ -51,8 +70,8 @@ def approve_suggestions(
         item["status"] = "approved"
         item["approved_at"] = timestamp
         item.pop("action", None)
-        by_binding[(item.get("service"), item.get("required"))] = item
-    result = sorted(by_binding.values(), key=lambda item: (str(item.get("service")), str(item.get("required"))))
+        by_binding[(item.get("environment"), item.get("service"), item.get("required"))] = item
+    result = sorted(by_binding.values(), key=lambda item: (str(item.get("environment")), str(item.get("service")), str(item.get("required"))))
     write_state(approvals_path, result)
     return result
 

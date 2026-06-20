@@ -130,3 +130,41 @@ def test_materialize_and_unmount_file_secret_lifecycle(tmp_path, monkeypatch, ca
     result = json.loads(capsys.readouterr().out)
     assert result["removed"] == [str(mounted)]
     assert not mounted.exists()
+
+
+def test_validate_consumes_environment_scoped_approved_binding(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "gcp-values.json"
+    fixture.write_text('{"API_TOKEN":"provider-value"}', encoding="utf-8")
+    contract = load_contract(EXAMPLE)
+    contract["providers"]["gcp-dev"]["fixture"] = str(fixture)
+    contract["services"]["api-gateway"]["requires"] = [{
+        "name": "API_TOKEN", "source": "review.required", "visibility": "secret", "phase": "runtime", "required": True,
+    }]
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    bindings = tmp_path / "approvals.json"
+    bindings.write_text(json.dumps([{
+        "service": "api-gateway", "required": "API_TOKEN", "suggested_source": "gcp-dev.API_TOKEN",
+        "environment": "dev", "status": "approved",
+    }]), encoding="utf-8")
+    assert main([
+        "--contract", str(contract_path), "validate", "--environment", "dev", "--service", "api-gateway",
+        "--phase", "runtime", "--bindings", str(bindings),
+    ]) == 0
+    assert "contract valid" in capsys.readouterr().out
+
+
+def test_doctor_requires_verified_file_mount(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    values = tmp_path / "values.json"
+    values.write_text('{"environment_value":{"NATS_URL":"nats://dev","REDIS_URL":"redis://dev"}}', encoding="utf-8")
+    result = main([
+        "--contract", str(EXAMPLE), "doctor", "api-gateway", "--environment", "dev", "--overlay", "preview",
+        "--values", str(values),
+    ])
+    assert result == 1
+    output = json.loads(capsys.readouterr().out)
+    file_diagnostic = next(item for item in output["diagnostics"] if item["variable"] == "GOOGLE_APPLICATION_CREDENTIALS")
+    assert file_diagnostic["status"] == "missing"
+    assert "mount-root" in file_diagnostic["hint"]
