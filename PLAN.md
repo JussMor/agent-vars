@@ -27,8 +27,9 @@ The roadmap below describes the complete product. Each milestone item is marked 
 - [x] Add complete provenance to every resolved value and value-aware environment diffs
 - [x] Add Vault, AWS Secrets Manager, Kubernetes Secrets, Cloudflare secrets, and encrypted-local provider adapters
 - [x] Add integration/end-to-end tests against local provider CLI emulators
+- [ ] Run the read-only real GCP Secret Manager integration test against a dedicated non-production secret — test implemented; local `gcloud` credentials currently require reauthentication
 
-All identified non-governance production-readiness items are complete. Reviewer enforcement, public-secret leak policy, audit export, and CI status checks remain exclusively in Milestone 8.
+All identified non-governance implementation items are complete. Real GCP verification remains an operational gate. Reviewer enforcement, public-secret leak policy, audit export, and CI status checks remain exclusively in Milestone 8.
 
 ## Scope
 
@@ -183,14 +184,14 @@ The criteria below are acceptance tests for Milestones 1–7. They do not imply 
 - `scan --discover` generates a draft contract from repository evidence.
 - `resources` lists provider metadata selected directly or through an environment profile.
 - `suggest` records candidate bindings with confidence and evidence.
-- `approve` persists explicit decisions; low-confidence and production-impacting suggestions require independent opt-in flags.
+- `approve` persists explicit decisions as an environment-scoped resolver layer; low-confidence and production-impacting suggestions require independent opt-in flags.
 - `sync` records provider resource availability and approved binding status without persisting payloads.
 
 **Pass condition:** a new repository can produce a reviewable draft and provider-binding state without manually rediscovering every variable or secret resource.
 
 **Verification:** scanner, workflow, provider adapter, environment-selection, and approval-policy tests cover the full metadata workflow.
 
-**Boundary:** synchronization does not silently rewrite the reviewed contract. Contract edits remain an explicit human-controlled step, and secret payloads never enter suggestion, approval, or sync state.
+**Boundary:** approved bindings affect resolution but synchronization does not silently rewrite the reviewed contract. Contract edits remain an explicit human-controlled step, and secret payloads never enter suggestion, approval, or sync state.
 
 ### 4. Contracts reflect real repository topology instead of hard-coded example roots
 
@@ -287,6 +288,7 @@ The criteria below are acceptance tests for Milestones 1–7. They do not imply 
 
 - Unit and CLI suite: `pytest -q`
 - Provider CLI protocol integration: `pytest -q tests/integration`
+- Real GCP read-only integration: set `AGENT_VARS_GCP_INTEGRATION_PROJECT` and `AGENT_VARS_GCP_INTEGRATION_SECRET`, then run `pytest -q tests/integration/test_gcp_secret_manager_real.py`
 - Syntax check: `python3 -m compileall -q agent_vars tests`
 - Documentation/patch hygiene: `git diff --check`
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 import os
 
@@ -55,6 +56,10 @@ def resolve_service(
     task: str | None = None,
     layers: dict[str, Any] | None = None,
     registry: Registry | None = None,
+    approved_bindings: dict[tuple[str, str], str] | None = None,
+    mount_root: Path | None = None,
+    mount_manifest: Path | None = None,
+    verify_files: bool = True,
 ) -> dict[str, ResolvedValue]:
     service = (contract.get("services") or {}).get(service_name)
     if not isinstance(service, dict):
@@ -75,6 +80,10 @@ def resolve_service(
             task=task,
             layers=layers,
             registry=registry,
+            approved_bindings=approved_bindings or {},
+            mount_root=mount_root,
+            mount_manifest=mount_manifest,
+            verify_files=verify_files,
         )
         result[resolved.name] = resolved
     return result
@@ -104,9 +113,23 @@ def _resolve_requirement(
     task: str | None,
     layers: dict[str, Any],
     registry: Registry,
+    approved_bindings: dict[tuple[str, str], str],
+    mount_root: Path | None,
+    mount_manifest: Path | None,
+    verify_files: bool,
 ) -> ResolvedValue:
     name = str(requirement["name"])
     source = str(requirement.get("source", name))
+    approved_source = approved_bindings.get((service_name, name))
+    if source == "review.required":
+        if not approved_source:
+            return ResolvedValue(
+                name=name, value=None, source=source, layer="approval", service=service_name,
+                environment=environment, overlay=overlay, phase=requirement.get("phase"), provider=None,
+                sandbox=sandbox, task=task, instance=None, status="missing",
+                hint="run suggest and approve, then provide the approvals file to resolution",
+            )
+        source = approved_source
     common = {
         "name": name,
         "source": source,
@@ -119,7 +142,20 @@ def _resolve_requirement(
     }
     if source.startswith("file."):
         path = _file_mount_path(contract, source)
-        return ResolvedValue(value=path, layer="file_mount", provider=None, instance=None, status="resolved" if path else "missing", hint=None if path else "declare the file mount path under files", **common)
+        if not verify_files:
+            return ResolvedValue(value=path, layer="file_mount", provider=None, instance=None, status="resolved" if path else "missing", hint=None if path else "declare the file mount path under files", **common)
+        if mount_root is None:
+            return ResolvedValue(value=None, layer="file_mount", provider=None, instance=None, status="unverified", hint="pass --mount-root so the mounted file and manifest can be verified", **common)
+        from .materializer import verify_file_secret
+        verification = verify_file_secret(
+            contract, service_name, source, Path(mount_root),
+            Path(mount_manifest) if mount_manifest else Path(mount_root) / ".agent-vars-mounts.json",
+        )
+        return ResolvedValue(
+            value=path if verification["status"] == "resolved" else None,
+            layer="file_mount", provider=None, instance=None, status=verification["status"],
+            error=verification.get("error"), hint=verification.get("hint"), **common,
+        )
     if source.startswith("service."):
         event = registry.resolve_scoped(
             source,

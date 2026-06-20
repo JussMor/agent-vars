@@ -280,7 +280,7 @@ agent-vars sync --environment dev
 agent-vars validate --environment dev --overlay preview --service frontend --phase build
 ```
 
-Agent Vars should keep the contract synchronized from evidence in the repo and connected providers:
+Agent Vars keeps repository discovery and approved provider-binding state synchronized from evidence:
 
 - code references such as `process.env`, `import.meta.env`, framework config, and build scripts
 - `.env.example`, `.env.template`, Docker Compose, Kubernetes, Helm, Terraform, and CI/CD workflows
@@ -288,19 +288,19 @@ Agent Vars should keep the contract synchronized from evidence in the repo and c
 - runtime publications from ephemeral services
 - service ownership rules approved by platform teams
 
-Humans review and approve the generated contract, but they should not have to rediscover every variable manually.
+Humans review the generated contract and approve suggested bindings. `approve` writes resolution input to `.agent-vars/approvals.json`; `sync` checks whether approved provider resources still exist. Neither command silently rewrites the contract or stores secret payloads.
 
 ## Provider guidance is automation, not magic
 
 If a user says "you can use GCP Secret Manager", Agent Vars should use that as a provider capability and automatically guide services where confidence is high. It should not silently guess critical mappings.
 
-The GCP adapter can help by:
+The GCP adapter:
 
 1. listing available secrets for the selected GCP project
 2. matching secret names to discovered env vars by convention
-3. detecting JSON secrets that should be mounted as files
-4. suggesting provider bindings for each service
-5. showing confidence and evidence before applying a mapping
+3. suggesting provider bindings for each service
+4. showing confidence and evidence before applying a mapping
+5. reading an approved secret only during resolution or materialization
 
 Example suggestion:
 
@@ -310,15 +310,13 @@ required: GOOGLE_APPLICATION_CREDENTIALS
 suggested_source: gcp.secret_manager.service-account-json
 materialization: file mount
 path: /app/gcp-credentials/service-account.json
-confidence: high
+confidence: medium
 evidence:
   - env var name matches Google SDK convention
-  - secret payload is valid JSON
-  - repo already references /app/gcp-credentials
 action: approve | edit | reject
 ```
 
-For low-confidence matches, Agent Vars should stop and ask for approval instead of wiring the wrong secret into a service. The product should feel automatic when conventions are clear and safe when they are not.
+The suggestion step does not inspect payloads or create mounts. JSON validation happens only after the contract explicitly declares a file secret and materialization fetches its approved payload. Unapproved `review.required` values remain unresolved.
 
 ## Environments and preview overlays
 
@@ -345,7 +343,7 @@ This keeps production/stage/QA contracts stable while allowing pull-request or A
 
 Some required configuration is not a scalar value. Google credentials are a common example because many SDKs expect a JSON file and an env var that points to that file.
 
-Agent Vars should fetch the JSON from the configured provider, validate it, mount it at the path already expected by the repo, inject the pointer env var, and mark dependent services as satisfied.
+Agent Vars fetches explicitly declared JSON from the configured provider, validates it, mounts it at the path expected by the repo, and injects the pointer env var. `validate` and `doctor` report the requirement as resolved only when the mounted file exists, satisfies policy, and matches its lifecycle manifest; pass `--mount-root` to verify it.
 
 ```yaml
 files:
@@ -387,13 +385,13 @@ agent-vars --contract agent-vars.example.yaml publish service.api-gateway.primar
   --ttl 2h
 ```
 
-That scoped value can trigger only the dependent frontend in the same sandbox to rebuild:
+That scoped value queues an action only for the dependent frontend in the same sandbox:
 
 ```text
 changed: service.api-gateway.primary.url
 scope: sandbox codex-workspace-abc123 / task task-789
 dependent: frontend.VITE_BASE_API_URL
-action: rebuild frontend in same sandbox only
+queued_action: rebuild frontend in same sandbox only
 not affected: qa, stage, prod, other developers, other sandboxes
 ```
 
@@ -407,7 +405,7 @@ Rules:
 - expire sandbox-scoped values when the sandbox lease ends
 - keep a tombstone/audit event so debugging remains possible without keeping the secret value forever
 
-This lets Agent Vars fetch stable secrets from GCP Secret Manager while safely combining them with per-user generated values that disappear after the task or sandbox is done.
+An external orchestrator consumes and acknowledges queued actions. The CLI does not directly rebuild or restart services.
 
 ## Validation flow
 
@@ -524,7 +522,7 @@ agent-vars doctor frontend --environment dev --overlay preview --sandbox workspa
 - show every required env var across an enterprise repo
 - generate service-specific `.env` files from one reviewed contract
 - mount required file secrets safely
-- wire frontend, API gateway, mobile gateway, and microservice URLs automatically
+- resolve scoped service URLs and queue dependent rebuild/restart actions
 - track env errors to service, source, provider, phase, sandbox, and instance
 - detect stale or conflicting values before build/runtime
 - support existing cloud secret managers instead of replacing them
@@ -583,6 +581,17 @@ agent-vars --contract agent-vars.example.yaml unmount api-gateway \
 
 Mount manifests contain paths, hashes, sizes, modes, service/environment scope, and timestamps—but never secret payloads. Unmount refuses to delete a modified file unless `--force` is explicit.
 
+Verify an already mounted file without rematerializing it:
+
+```bash
+agent-vars --contract agent-vars.example.yaml validate \
+  --environment dev --overlay preview --service api-gateway --phase setup \
+  --mount-root .agent-vars/mounts
+
+agent-vars --contract agent-vars.example.yaml doctor api-gateway \
+  --environment dev --overlay preview --mount-root .agent-vars/mounts
+```
+
 Install development dependencies and run all unit and provider-emulator integration tests with:
 
 ```bash
@@ -631,10 +640,23 @@ agent-vars --contract agent-vars.example.yaml diff qa prod --service api-gateway
 
 Provider adapters use their standard CLIs: `gcloud`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
 
-Suggestions are written to `.agent-vars/suggestions.json` with confidence, evidence, environment, and production impact. `approve` accepts high-confidence non-production mappings by default. Low-confidence mappings require `--all`; production mappings independently require `--allow-production`. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads.
+Suggestions are written to `.agent-vars/suggestions.json` with confidence, evidence, environment, and production impact. `approve` accepts high-confidence non-production mappings by default and writes approved sources to `.agent-vars/approvals.json`, which `validate`, `materialize`, and `doctor` consume automatically. Use `--bindings` to select another approval file. Low-confidence mappings require `--all`; production mappings independently require `--allow-production`. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads or alter the contract.
 
 `doctor`, `trace`, and `events` redact values by default. Use `--reveal` only in a private terminal. Diagnostics distinguish missing, malformed, stale, provider-error, and conflicting values and include remediation hints. `diff --service` compares value fingerprints and provenance without emitting secret values.
 
 Publishing a second primary instance in the same scope fails while the first lease is active. Use `--takeover` only when replacing that primary is intentional.
 
 The complete roadmap and the explicit Milestone 8 governance boundary are tracked in [PLAN.md](PLAN.md).
+
+### Real GCP Secret Manager verification
+
+The regular suite uses deterministic fixtures and CLI emulators. A separate test performs real read-only Secret Manager list/access calls and never prints or persists the payload:
+
+```bash
+gcloud auth login
+AGENT_VARS_GCP_INTEGRATION_PROJECT=my-nonprod-project \
+AGENT_VARS_GCP_INTEGRATION_SECRET=my-test-secret \
+.venv/bin/pytest -q tests/integration/test_gcp_secret_manager_real.py
+```
+
+Set `AGENT_VARS_GCP_INTEGRATION_EXPECT_JSON=1` when the test secret must contain a JSON object. Use a dedicated non-production secret with least-privilege `secretmanager.versions.access` and secret-list permissions.

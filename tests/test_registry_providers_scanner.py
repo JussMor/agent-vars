@@ -6,7 +6,7 @@ from agent_vars.contract import load_contract
 from agent_vars.providers import ProviderSecret, get_secret, suggest_bindings
 from agent_vars.registry import Registry, RegistryConflict
 from agent_vars.scanner import scan_repo
-from agent_vars.workflow import approve_suggestions, sync_provider_metadata, write_state
+from agent_vars.workflow import approve_suggestions, approved_binding_map, sync_provider_metadata, write_state
 
 
 def test_provider_suggestions_match_env_names():
@@ -77,6 +77,17 @@ def test_approval_and_sync_workflow(tmp_path):
     assert [item["required"] for item in approved] == ["TOKEN"]
     state = sync_provider_metadata("local", [ProviderSecret("TOKEN", "local", "local", {})], approvals, sync)
     assert state["bindings"][0]["status"] == "available"
+    assert approved_binding_map(approvals) == {("api", "TOKEN"): "local.TOKEN"}
+
+
+def test_approved_bindings_are_environment_scoped(tmp_path):
+    approvals = tmp_path / "approvals.json"
+    write_state(approvals, [
+        {"service": "api", "required": "TOKEN", "suggested_source": "dev.TOKEN", "environment": "dev", "status": "approved"},
+        {"service": "api", "required": "TOKEN", "suggested_source": "prod.TOKEN", "environment": "prod", "status": "approved"},
+    ])
+    assert approved_binding_map(approvals, environment="dev") == {("api", "TOKEN"): "dev.TOKEN"}
+    assert approved_binding_map(approvals, environment="prod") == {("api", "TOKEN"): "prod.TOKEN"}
 
 
 def test_gcp_payload_fixture_is_read_without_state_file(tmp_path, monkeypatch):

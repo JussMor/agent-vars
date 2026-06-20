@@ -13,7 +13,7 @@ from .resolution import missing_required, resolve_service
 from .scanner import scan_repo, scan_workspace
 from .materializer import cleanup_file_secrets, materialize_file_secrets
 from .outputs import validate_service_output
-from .workflow import DEFAULT_STATE_DIR, approve_suggestions, sync_provider_metadata, write_state
+from .workflow import DEFAULT_STATE_DIR, approve_suggestions, approved_binding_map, sync_provider_metadata, write_state
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--values", help="JSON file containing layered values")
     validate.add_argument("--sandbox")
     validate.add_argument("--task")
+    validate.add_argument("--bindings", default=str(DEFAULT_STATE_DIR / "approvals.json"), help="Approved binding state")
+    validate.add_argument("--mount-root", help="Root used to verify file-secret mounts")
+    validate.add_argument("--mount-manifest", help="Mount manifest; defaults beneath --mount-root")
 
     materialize = sub.add_parser("materialize", help="Render a service .env file")
     materialize.add_argument("service", help="Service name")
@@ -49,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--file-values", help="JSON object of file-secret payloads, intended for tests/local automation")
     materialize.add_argument("--mount-root", help="Materialize declared file mounts beneath this root")
     materialize.add_argument("--mount-manifest", help="Mount lifecycle manifest; defaults beneath --mount-root")
+    materialize.add_argument("--bindings", default=str(DEFAULT_STATE_DIR / "approvals.json"), help="Approved binding state")
 
     unmount = sub.add_parser("unmount", help="Remove tracked file-secret mounts safely")
     unmount.add_argument("service", nargs="?", help="Only remove mounts for this service")
@@ -152,6 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--task")
     doctor.add_argument("--values", help="JSON file containing layered values")
     doctor.add_argument("--reveal", action="store_true", help="Include resolved values; unsafe for shared logs")
+    doctor.add_argument("--bindings", default=str(DEFAULT_STATE_DIR / "approvals.json"), help="Approved binding state")
+    doctor.add_argument("--mount-root", help="Root used to verify file-secret mounts")
+    doctor.add_argument("--mount-manifest", help="Mount manifest; defaults beneath --mount-root")
 
     diff = sub.add_parser("diff", help="Diff provider profiles used by two environments")
     diff.add_argument("left")
@@ -209,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
                     sandbox=args.sandbox,
                     task=args.task,
                     layers=_read_json(args.values),
+                    approved_bindings=_approved_bindings(args.bindings, args.environment),
+                    mount_root=Path(args.mount_root) if args.mount_root else None,
+                    mount_manifest=Path(args.mount_manifest) if args.mount_manifest else None,
                 )
                 missing = missing_required(service, resolved, args.phase)
                 diagnostics = [item for item in diagnose_service(contract, args.service, resolved) if not args.phase or item.phase == args.phase]
@@ -225,7 +235,8 @@ def main(argv: list[str] | None = None) -> int:
                 for issue in issues:
                     print(issue.render(), file=sys.stderr)
                 return 1
-            resolved = resolve_service(
+            bindings = _approved_bindings(args.bindings, args.environment)
+            preflight = resolve_service(
                 contract,
                 args.service,
                 environment=args.environment,
@@ -233,9 +244,11 @@ def main(argv: list[str] | None = None) -> int:
                 sandbox=args.sandbox,
                 task=args.task,
                 layers=_read_json(args.values),
+                approved_bindings=bindings,
+                verify_files=False,
             )
             service = (contract.get("services") or {}).get(args.service, {})
-            missing = missing_required(service, resolved) if isinstance(service, dict) else []
+            missing = missing_required(service, preflight) if isinstance(service, dict) else []
             if args.strict and missing:
                 raise ValueError(f"missing required values: {', '.join(missing)}")
             if args.mount_root and not args.dry_run:
@@ -249,6 +262,22 @@ def main(argv: list[str] | None = None) -> int:
                     payloads=_read_json(args.file_values),
                     manifest_path=Path(args.mount_manifest) if args.mount_manifest else Path(args.mount_root) / ".agent-vars-mounts.json",
                 )
+            resolved = resolve_service(
+                contract,
+                args.service,
+                environment=args.environment,
+                overlay=args.overlay,
+                sandbox=args.sandbox,
+                task=args.task,
+                layers=_read_json(args.values),
+                approved_bindings=bindings,
+                mount_root=Path(args.mount_root) if args.mount_root else None,
+                mount_manifest=Path(args.mount_manifest) if args.mount_manifest else None,
+                verify_files=not args.dry_run,
+            )
+            missing = missing_required(service, resolved) if isinstance(service, dict) else []
+            if args.strict and missing:
+                raise ValueError(f"missing or unverified required values: {', '.join(missing)}")
             rendered = materialize_service(contract, args.service, resolved)
             if args.out and not args.dry_run:
                 Path(args.out).write_text(rendered, encoding="utf-8")
@@ -345,6 +374,9 @@ def main(argv: list[str] | None = None) -> int:
                 sandbox=args.sandbox,
                 task=args.task,
                 layers=_read_json(args.values),
+                approved_bindings=_approved_bindings(args.bindings, args.environment),
+                mount_root=Path(args.mount_root) if args.mount_root else None,
+                mount_manifest=Path(args.mount_manifest) if args.mount_manifest else None,
             )
             missing = missing_required(service, resolved)
             diagnostics = diagnose_service(contract, args.service, resolved)
@@ -409,6 +441,12 @@ def _select_provider(contract: dict[str, object], provider_name: str | None, env
     if not isinstance(provider_name, str) or not isinstance(provider, dict):
         raise ValueError(f"unknown provider: {provider_name}")
     return provider_name, provider
+
+
+def _approved_bindings(path: str | None, environment: str | None) -> dict[tuple[str, str], str]:
+    if not path or not Path(path).exists():
+        return {}
+    return approved_binding_map(Path(path), environment=environment)
 
 
 if __name__ == "__main__":  # pragma: no cover

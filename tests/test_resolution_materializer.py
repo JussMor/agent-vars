@@ -37,7 +37,8 @@ def test_layered_resolution_uses_documented_precedence(tmp_path, monkeypatch):
     assert resolved["NATS_URL"].value == "nats://task"
     assert resolved["NATS_URL"].layer == "task_override"
     assert resolved["REDIS_URL"].value == "redis://repo"
-    assert missing_required(contract["services"]["api-gateway"], resolved) == []
+    assert missing_required(contract["services"]["api-gateway"], resolved) == ["GOOGLE_APPLICATION_CREDENTIALS"]
+    assert resolved["GOOGLE_APPLICATION_CREDENTIALS"].status == "unverified"
 
 
 def test_contract_environment_and_overlay_values_are_inherited(tmp_path, monkeypatch):
@@ -77,10 +78,24 @@ def test_environment_provider_profile_resolves_payload(tmp_path, monkeypatch):
         environment="dev",
         overlay="preview",
         registry=Registry(tmp_path / "registry.json"),
+        approved_bindings={("api-gateway", "API_TOKEN"): "gcp-dev.API_TOKEN"},
     )
     assert resolved["API_TOKEN"].value == "provider-value"
     assert resolved["API_TOKEN"].provider == "gcp-dev"
     assert resolved["API_TOKEN"].layer == "provider_secret"
+
+
+def test_review_required_value_does_not_resolve_without_approval(tmp_path, monkeypatch):
+    contract = load_contract(EXAMPLE)
+    contract["services"]["api-gateway"]["requires"] = [{
+        "name": "API_TOKEN", "source": "review.required", "visibility": "secret", "phase": "runtime", "required": True,
+    }]
+    fixture = tmp_path / "gcp-values.json"
+    fixture.write_text('{"API_TOKEN":"provider-value"}', encoding="utf-8")
+    monkeypatch.setenv("AGENT_VARS_GCP_VALUES_FILE", str(fixture))
+    resolved = resolve_service(contract, "api-gateway", environment="dev", overlay="preview", registry=Registry(tmp_path / "registry.json"))
+    assert resolved["API_TOKEN"].status == "missing"
+    assert resolved["API_TOKEN"].layer == "approval"
 
 
 def test_service_output_resolution_carries_instance_provenance(tmp_path):
@@ -152,6 +167,30 @@ def test_mount_manifest_supports_safe_lifecycle_cleanup(tmp_path):
     assert removed == written
     assert not written[0].exists()
     assert not manifest.exists()
+
+
+def test_resolution_verifies_file_mount_content_policy_and_manifest(tmp_path):
+    contract = load_contract(EXAMPLE)
+    manifest = tmp_path / ".mounts.json"
+    target = materialize_file_secrets(
+        contract, "api-gateway", environment="dev", mount_root=tmp_path,
+        payloads={"gcp_service_account": {"type": "service_account", "project_id": "test"}},
+        manifest_path=manifest,
+    )[0]
+    resolved = resolve_service(
+        contract, "api-gateway", environment="dev", overlay="preview",
+        layers={"environment_value": {"NATS_URL": "nats://dev", "REDIS_URL": "redis://dev"}},
+        registry=Registry(tmp_path / "registry.json"), mount_root=tmp_path, mount_manifest=manifest,
+    )
+    assert resolved["GOOGLE_APPLICATION_CREDENTIALS"].status == "resolved"
+    target.write_text("tampered", encoding="utf-8")
+    tampered = resolve_service(
+        contract, "api-gateway", environment="dev", overlay="preview",
+        layers={"environment_value": {"NATS_URL": "nats://dev", "REDIS_URL": "redis://dev"}},
+        registry=Registry(tmp_path / "registry.json"), mount_root=tmp_path, mount_manifest=manifest,
+    )
+    assert tampered["GOOGLE_APPLICATION_CREDENTIALS"].status == "malformed"
+    assert "checksum" in tampered["GOOGLE_APPLICATION_CREDENTIALS"].error
 
 
 def test_cleanup_refuses_to_delete_modified_mount_without_force(tmp_path):

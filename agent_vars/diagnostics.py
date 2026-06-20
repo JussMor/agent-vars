@@ -38,9 +38,12 @@ def diagnose_service(contract: dict[str, Any], service_name: str, resolved: dict
         if previous != source:
             diagnostics.append(Diagnostic("error", "conflicting", service_name, name, source, phase, "variable has conflicting sources", "choose one source or rename the service-specific variable"))
         value = resolved.get(name)
-        if value is None or value.status == "missing":
+        if value is None or value.status in {"missing", "unverified"}:
             if requirement.get("required", True):
                 diagnostics.append(Diagnostic("error", "missing", service_name, name, source, phase, "required value is unresolved", value.hint if value else "declare and provide the required value"))
+            continue
+        if value.status == "malformed":
+            diagnostics.append(Diagnostic("error", "malformed", service_name, name, source, phase, value.error or "mounted value is malformed", value.hint or "re-materialize the value"))
             continue
         if value.status in {"stale", "expired"}:
             diagnostics.append(Diagnostic("error", "stale", service_name, name, source, phase, "resolved value is stale", value.hint or "renew or republish the source in this scope"))

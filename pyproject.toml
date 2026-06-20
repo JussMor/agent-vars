@@ -19,3 +19,6 @@ agent-vars = "agent_vars.cli:main"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+  "gcp_integration: requires authenticated gcloud access and explicit GCP project/secret environment variables",
+]
