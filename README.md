@@ -477,3 +477,15 @@ agent-vars doctor frontend --environment dev --overlay preview
 - track env errors to service, source, provider, phase, sandbox, and instance
 - detect stale or conflicting values before build/runtime
 - support existing cloud secret managers instead of replacing them
+
+## Coding-phase CLI
+
+This repository now includes an initial Python implementation of the `agent-vars` command. It focuses on the first usable coding phase from the plan: loading the repository contract, validating declared environments and overlays, checking service requirements against runtime/file/service sources, summarizing discovered contract shape, and rendering service-specific `.env` output without embedding file-secret contents.
+
+```bash
+python -m agent_vars.cli --contract agent-vars.example.yaml scan
+python -m agent_vars.cli --contract agent-vars.example.yaml validate --environment dev --overlay preview
+python -m agent_vars.cli --contract agent-vars.example.yaml materialize api-gateway --dry-run
+```
+
+The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
