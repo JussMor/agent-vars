@@ -107,23 +107,106 @@ def scan_workspace(roots: list[Path]) -> dict[str, Any]:
 
 
 def _discover_services(root: Path, env_files: list[str], dockerfiles: list[str], code_vars: dict[str, list[str]], env_file_vars: dict[str, list[str]], frameworks: dict[str, str]) -> dict[str, Any]:
-    package_roots = [str(path.relative_to(root)) for path in root.rglob("package.json") if not _ignored(path) and path.parent != root]
-    service_roots = {Path(p).parent for p in env_files + dockerfiles + package_roots if Path(p).parent != Path(".")}
-    if not service_roots:
-        service_roots = {Path(".")}
+    package_roots = _package_roots(root)
+    evidence_paths = sorted(set(env_files) | set(dockerfiles) | set(code_vars) | set(env_file_vars))
+    root_monolith = not package_roots and any(Path(path).parent == Path(".") for path in [*env_files, *dockerfiles])
+    assigned: dict[Path, set[str]] = {}
+    env_files_by_root: dict[Path, list[str]] = {}
+
+    for relative in evidence_paths:
+        service_root = Path(".") if root_monolith else _nearest_service_root(Path(relative), package_roots)
+        assigned.setdefault(service_root, set())
+        if relative in code_vars:
+            assigned[service_root].update(code_vars[relative])
+        if relative in env_file_vars:
+            assigned[service_root].update(env_file_vars[relative])
+        if relative in env_files:
+            env_files_by_root.setdefault(service_root, []).append(relative)
+
+    for framework_root in frameworks:
+        assigned.setdefault(Path(framework_root), set())
+    for package_root in package_roots:
+        assigned.setdefault(package_root, set())
+    if not assigned:
+        assigned[Path(".")] = set()
+
     services: dict[str, Any] = {}
-    for service_root in sorted(service_roots):
-        name = root.name if str(service_root) == "." else service_root.name
-        service_env_files = [p for p in env_files if Path(p).is_relative_to(service_root)]
-        vars_for_service = sorted(
-            {v for path, vars_ in code_vars.items() if Path(path).is_relative_to(service_root) for v in vars_}
-            | {v for path, vars_ in env_file_vars.items() if Path(path).is_relative_to(service_root) for v in vars_}
-        )
-        spec: dict[str, Any] = {"root": str(service_root), "env_files": service_env_files, "requires": [{"name": v, "source": "review.required", "visibility": _visibility(v), "phase": _phase(v), "required": True} for v in vars_for_service]}
+    used_names: set[str] = set()
+    for service_root in sorted(assigned, key=lambda value: (len(value.parts), str(value))):
+        if _covered_by_child_service(service_root, assigned):
+            continue
+        service_env_files = sorted(env_files_by_root.get(service_root, []))
+        vars_for_service = sorted(assigned.get(service_root, set()))
+        name = _unique_service_name(_service_name(root, service_root), service_root, used_names)
+        used_names.add(name)
+        spec: dict[str, Any] = {
+            "root": str(service_root),
+            "env_files": service_env_files,
+            "requires": [
+                {
+                    "name": variable,
+                    "source": variable,
+                    "visibility": _visibility(variable),
+                    "phase": _phase(variable),
+                    "required": _required_by_default(variable),
+                }
+                for variable in vars_for_service
+            ],
+        }
         if str(service_root) in frameworks:
             spec["framework"] = frameworks[str(service_root)]
         services[name] = spec
     return services
+
+
+def _package_roots(root: Path) -> set[Path]:
+    return {path.parent.relative_to(root) for path in root.rglob("package.json") if not _ignored(path)}
+
+
+def _nearest_service_root(relative: Path, package_roots: set[Path]) -> Path:
+    candidates = [candidate for candidate in package_roots if relative == candidate or relative.is_relative_to(candidate)]
+    if candidates:
+        return max(candidates, key=lambda value: len(value.parts))
+    parent = relative.parent
+    return parent if parent != Path(".") else Path(".")
+
+
+def _covered_by_child_service(service_root: Path, assigned: dict[Path, set[str]]) -> bool:
+    if assigned.get(service_root):
+        return False
+    if service_root == Path("."):
+        return any(child != service_root for child in assigned)
+    return any(child != service_root and child.is_relative_to(service_root) for child in assigned)
+
+
+def _service_name(root: Path, service_root: Path) -> str:
+    package_file = root / service_root / "package.json"
+    if package_file.exists():
+        try:
+            package = json.loads(package_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            package = {}
+        package_name = package.get("name") if isinstance(package, dict) else None
+        if isinstance(package_name, str) and package_name.strip():
+            return _sanitize_service_name(package_name.rsplit("/", 1)[-1])
+    return root.name if service_root == Path(".") else service_root.name
+
+
+def _unique_service_name(name: str, service_root: Path, used_names: set[str]) -> str:
+    if name not in used_names:
+        return name
+    fallback = _sanitize_service_name(str(service_root).replace("/", "-").replace(".", "root"))
+    if fallback and fallback not in used_names:
+        return fallback
+    index = 2
+    while f"{name}-{index}" in used_names:
+        index += 1
+    return f"{name}-{index}"
+
+
+def _sanitize_service_name(name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip()).strip("-")
+    return sanitized or "service"
 
 
 def _visibility(name: str) -> str:
@@ -138,8 +221,12 @@ def _phase(name: str) -> str:
     return "build" if name.startswith(("VITE_", "NEXT_PUBLIC_", "PUBLIC_")) else "runtime"
 
 
+def _required_by_default(name: str) -> bool:
+    return not name.endswith("_OPTIONAL")
+
+
 def _uncertain(services: dict[str, Any]) -> list[dict[str, str]]:
-    return [{"service": service, "variable": req["name"], "reason": "source requires human/provider approval"} for service, spec in services.items() for req in spec.get("requires", []) if req.get("source") == "review.required"]
+    return [{"service": service, "variable": req["name"], "reason": "source inferred from repository evidence; review provider mapping and required policy"} for service, spec in services.items() for req in spec.get("requires", [])]
 
 
 def _read_env_files(root: Path, env_files: list[str]) -> dict[str, list[str]]:

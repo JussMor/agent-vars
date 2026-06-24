@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from importlib.resources import files
 from pathlib import Path
 
 from .contract import as_json, contract_summary, load_contract, materialize_service, validate_contract
@@ -20,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-vars", description="Validate and materialize Agent Vars contracts")
     parser.add_argument("--contract", default="agent-vars.yaml", help="Path to agent-vars YAML contract")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    skill = sub.add_parser("skill", help="Print the packaged Agent Vars skill instructions")
+    skill.add_argument("--path", action="store_true", help="Print only the installed SKILL.md path")
 
     scan = sub.add_parser("scan", help="Scan a repository or summarize an existing contract")
     scan.add_argument("--repo", action="append", help="Repository root to scan; repeat for a multi-repo workspace")
@@ -39,9 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--mount-root", help="Root used to verify file-secret mounts")
     validate.add_argument("--mount-manifest", help="Mount manifest; defaults beneath --mount-root")
 
-    materialize = sub.add_parser("materialize", help="Render a service .env file")
+    materialize = sub.add_parser("materialize", help="Render or write a service .env file")
     materialize.add_argument("service", help="Service name")
-    materialize.add_argument("--out", help="Output file path; defaults to stdout")
+    materialize.add_argument("--out", help="Output file path; defaults to the service env file when declared, otherwise stdout")
     materialize.add_argument("--dry-run", action="store_true", help="Print instead of writing --out")
     materialize.add_argument("--environment", help="Environment used to validate materialization scope")
     materialize.add_argument("--overlay", help="Overlay used to validate materialization scope")
@@ -177,6 +182,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     contract_path = Path(args.contract)
     try:
+        if args.command == "skill":
+            skill_path = files("agent_vars").joinpath("SKILL.md")
+            if args.path:
+                print(skill_path)
+            else:
+                sys.stdout.write(skill_path.read_text(encoding="utf-8"))
+            return 0
+
         if args.command == "scan" and args.discover:
             roots = [Path(path) for path in (args.repo or ["."])]
             discovered = scan_workspace(roots) if len(roots) > 1 else scan_repo(roots[0])
@@ -279,8 +292,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.strict and missing:
                 raise ValueError(f"missing or unverified required values: {', '.join(missing)}")
             rendered = materialize_service(contract, args.service, resolved)
-            if args.out and not args.dry_run:
-                Path(args.out).write_text(rendered, encoding="utf-8")
+            output_path = Path(args.out) if args.out else _default_env_output(contract, args.service, args.environment, args.overlay)
+            if output_path and not args.dry_run:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(rendered, encoding="utf-8")
             else:
                 sys.stdout.write(rendered)
             return 0
@@ -413,6 +428,39 @@ def _read_json(path: str | None) -> dict[str, object]:
     if not isinstance(data, dict):
         raise ValueError(f"JSON file must contain an object: {path}")
     return data
+
+
+def _default_env_output(contract: dict[str, object], service_name: str, environment: str | None, overlay: str | None) -> Path | None:
+    services = contract.get("services", {})
+    service = services.get(service_name) if isinstance(services, dict) else None
+    if not isinstance(service, dict):
+        return None
+    env_files = [str(item) for item in service.get("env_files", []) if isinstance(item, str)]
+    if not env_files:
+        return None
+    selected = _select_env_file(env_files, environment, overlay)
+    return Path(_env_template_target(selected))
+
+
+def _select_env_file(env_files: list[str], environment: str | None, overlay: str | None) -> str:
+    tokens = [token for token in (overlay, environment) if token]
+    for token in tokens:
+        match = next((path for path in env_files if re.search(rf"(^|[.\-_]){re.escape(str(token))}([.\-_]|$)", Path(path).name)), None)
+        if match:
+            return match
+    non_example = next((path for path in env_files if not _is_env_template(path)), None)
+    return non_example or env_files[0]
+
+
+def _env_template_target(path: str) -> str:
+    for suffix in (".example", ".template", ".sample", ".dist"):
+        if path.endswith(suffix):
+            return path[: -len(suffix)]
+    return path
+
+
+def _is_env_template(path: str) -> bool:
+    return path.endswith((".example", ".template", ".sample", ".dist"))
 
 
 def _replica_limit(contract: dict[str, object], service_name: str | None) -> int | None:

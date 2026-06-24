@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from agent_vars.contract import materialize_service, validate_contract
 from agent_vars.scanner import scan_repo, scan_workspace
 
 
@@ -63,3 +64,92 @@ def test_scanner_coordinates_multiple_repositories(tmp_path):
     assert set(workspace["repositories"]) == {"frontend", "api"}
     assert set(workspace["services"]) == {"frontend:frontend", "api:api"}
     assert {item["repository"] for item in workspace["uncertain_mappings"]} == {"frontend", "api"}
+
+
+def test_scanner_supports_single_monolith_without_package_boundaries(tmp_path):
+    (tmp_path / ".env.example").write_text("DATABASE_URL=\nAPI_TOKEN=\nPUBLIC_BASE_URL=\n", encoding="utf-8")
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "settings.py").write_text(
+        "import os\nDATABASE_URL = os.getenv('DATABASE_URL')\nFEATURE_FLAG = os.environ.get('FEATURE_FLAG')\n",
+        encoding="utf-8",
+    )
+
+    profile = scan_repo(tmp_path)
+
+    assert profile["repo"]["topology"] == "single"
+    assert list(profile["services"]) == [tmp_path.name]
+    service = profile["services"][tmp_path.name]
+    assert service["root"] == "."
+    assert service["env_files"] == [".env.example"]
+    requirements = {item["name"]: item for item in service["requires"]}
+    assert set(requirements) == {"API_TOKEN", "DATABASE_URL", "FEATURE_FLAG", "PUBLIC_BASE_URL"}
+    assert requirements["API_TOKEN"]["visibility"] == "secret"
+    assert requirements["PUBLIC_BASE_URL"]["phase"] == "build"
+    assert validate_contract(profile) == []
+    rendered = materialize_service(profile, tmp_path.name)
+    assert "DATABASE_URL=${DATABASE_URL}" in rendered
+    assert "FEATURE_FLAG=${FEATURE_FLAG}" in rendered
+
+
+def test_scanner_promotes_root_next_app_env_evidence_to_service_requirements(tmp_path):
+    (tmp_path / "package.json").write_text('{"name":"everbetter-pro","dependencies":{"next":"latest"}}', encoding="utf-8")
+    (tmp_path / ".env.local.example").write_text(
+        "APP_BASE_URL=\nAUTH0_CLIENT_SECRET=\nNEXT_PUBLIC_MAXWELL_API_BASE_URL=\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "src" / "app" / "api" / "status"
+    src.mkdir(parents=True)
+    (src / "route.ts").write_text(
+        "console.log(process.env.MAXWELL_API_BASE_URL, process.env.NEXT_PUBLIC_WS_URL)",
+        encoding="utf-8",
+    )
+    stub = tmp_path / "prism-stub"
+    stub.mkdir()
+    (stub / "package.json").write_text('{"name":"prism-stub"}', encoding="utf-8")
+
+    profile = scan_repo(tmp_path)
+
+    assert profile["repo"]["topology"] == "monorepo"
+    assert set(profile["services"]) == {"everbetter-pro", "prism-stub"}
+    app = profile["services"]["everbetter-pro"]
+    requirements = {item["name"]: item for item in app["requires"]}
+    assert set(requirements) == {
+        "APP_BASE_URL",
+        "AUTH0_CLIENT_SECRET",
+        "MAXWELL_API_BASE_URL",
+        "NEXT_PUBLIC_MAXWELL_API_BASE_URL",
+        "NEXT_PUBLIC_WS_URL",
+    }
+    assert requirements["APP_BASE_URL"]["source"] == "APP_BASE_URL"
+    assert requirements["AUTH0_CLIENT_SECRET"]["visibility"] == "secret"
+    assert requirements["NEXT_PUBLIC_MAXWELL_API_BASE_URL"]["phase"] == "build"
+    assert app["env_files"] == [".env.local.example"]
+    assert app["framework"] == "next"
+    assert validate_contract(profile) == []
+    rendered = materialize_service(profile, "everbetter-pro")
+    assert "APP_BASE_URL=${APP_BASE_URL}" in rendered
+    assert "NEXT_PUBLIC_MAXWELL_API_BASE_URL=${NEXT_PUBLIC_MAXWELL_API_BASE_URL}" in rendered
+
+
+def test_scanner_maps_monorepo_package_evidence_to_nearest_service(tmp_path):
+    api = tmp_path / "apps" / "api"
+    web = tmp_path / "apps" / "web"
+    api.mkdir(parents=True)
+    web.mkdir(parents=True)
+    (tmp_path / "package.json").write_text('{"private":true,"workspaces":["apps/*"]}', encoding="utf-8")
+    (api / "package.json").write_text('{"name":"api-service"}', encoding="utf-8")
+    (api / ".env.example").write_text("DATABASE_URL=\n", encoding="utf-8")
+    (api / "server.ts").write_text("console.log(process.env.API_TOKEN)", encoding="utf-8")
+    (web / "package.json").write_text('{"name":"web","devDependencies":{"vite":"latest"}}', encoding="utf-8")
+    (web / ".env.example").write_text("VITE_API_URL=\n", encoding="utf-8")
+    (web / "main.ts").write_text("console.log(import.meta.env.VITE_PUBLIC_FLAG)", encoding="utf-8")
+
+    profile = scan_repo(tmp_path)
+
+    assert profile["repo"]["topology"] == "monorepo"
+    assert set(profile["services"]) == {"api-service", "web"}
+    assert {item["name"] for item in profile["services"]["api-service"]["requires"]} == {"API_TOKEN", "DATABASE_URL"}
+    assert {item["name"] for item in profile["services"]["web"]["requires"]} == {"VITE_API_URL", "VITE_PUBLIC_FLAG"}
+    assert profile["services"]["web"]["framework"] == "vite"

@@ -249,6 +249,8 @@ Do not copy the example literally. The example demonstrates the schema shape. A 
 `agent-vars scan` should inspect:
 
 - service roots and monorepo layout
+- monolith repositories with one root service
+- root-level applications as services, even when another subservice is present
 - frontend framework and public env naming conventions
 - `.env*` files and `.env.example` templates
 - Docker Compose runtime dependencies
@@ -259,6 +261,8 @@ Do not copy the example literally. The example demonstrates the schema shape. A 
 - duplicated variables that mean different things in different services
 
 Then it should generate a draft contract and report uncertain mappings for human review.
+
+Discovered variables are promoted into `services.<name>.requires` for the nearest package or service root. In a monolith, the root service uses `root: "."`; in a monorepo, each nearest package or service root gets its own service; in a multi-repo workspace, services are repository-qualified. The generated source defaults to the variable name itself, so `materialize --values values.json`, process environment values, and an environment `provider_profile` can resolve values immediately while provider mappings are still being reviewed. The `uncertain_mappings` section remains as a review queue rather than blocking dry-runs or local fixtures.
 
 The scanner supports coordinated multi-repository profiles by repeating `--repo`:
 
@@ -544,6 +548,7 @@ For local development, install it in editable mode:
 python3 -m venv .venv
 .venv/bin/pip install -e .
 
+.venv/bin/agent-vars skill
 .venv/bin/agent-vars --contract agent-vars.example.yaml scan
 .venv/bin/agent-vars --contract agent-vars.example.yaml validate --environment dev --overlay preview
 .venv/bin/agent-vars --contract agent-vars.example.yaml materialize api-gateway --dry-run
@@ -596,7 +601,22 @@ The wheel includes an agent instruction file at `agent_vars/SKILL.md`. Another a
 python3 -c 'from importlib.resources import files; print(files("agent_vars").joinpath("SKILL.md"))'
 ```
 
+Or print the packaged instructions directly:
+
+```bash
+agent-vars skill
+```
+
 The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
+
+For normal local use, preview first and then write the service's default env target:
+
+```bash
+agent-vars --contract agent-vars.yaml materialize web --environment dev --dry-run
+agent-vars --contract agent-vars.yaml materialize web --environment dev
+```
+
+If the service declares `.env.local.example`, the default write target is `.env.local`; if it declares `services/api/.env.example`, the target is `services/api/.env`. Use `--out` when you want an explicit path.
 
 Resolve actual values and fail when required values are missing:
 
