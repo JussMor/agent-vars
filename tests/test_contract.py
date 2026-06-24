@@ -17,7 +17,7 @@ def test_summary_counts_enterprise_shape():
         "services": 4,
         "environments": 5,
         "overlays": 1,
-        "providers": 6,
+        "providers": 7,
         "requirements": 9,
     }
 

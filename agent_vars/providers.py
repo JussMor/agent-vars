@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,8 @@ def list_secrets(provider_name: str, provider: dict[str, Any]) -> list[ProviderS
         return _list_aws(provider_name, provider)
     if kind == "kubernetes":
         return _list_kubernetes(provider_name, provider)
+    if kind == "vercel":
+        return _list_vercel(provider_name, provider)
     if kind == "local-encrypted":
         return _list_local_encrypted(provider_name, provider)
     if kind == "local":
@@ -113,6 +116,11 @@ def get_secret(provider_name: str, provider: dict[str, Any], secret_name: str) -
         if len(data) == 1:
             return base64.b64decode(next(iter(data.values()))).decode("utf-8")
         return json.dumps({name: base64.b64decode(value).decode("utf-8") for name, value in data.items()})
+    if kind == "vercel":
+        values = _pull_vercel_env(provider)
+        if secret_name not in values:
+            raise ProviderError(f"Vercel environment variable not found: {secret_name}")
+        return values[secret_name]
     if kind == "local-encrypted":
         values = _decrypt_local(provider)
         if secret_name not in values:
@@ -227,6 +235,26 @@ def _list_kubernetes(provider_name: str, provider: dict[str, Any]) -> list[Provi
     return [ProviderSecret(str(item.get("metadata", {}).get("name")), provider_name, "kubernetes", {"namespace": namespace, "type": item.get("type")}) for item in items if isinstance(item, dict) and item.get("metadata", {}).get("name")]
 
 
+def _list_vercel(provider_name: str, provider: dict[str, Any]) -> list[ProviderSecret]:
+    args = _vercel_base_args(provider) + ["env", "ls"]
+    if provider.get("environment"):
+        args.append(str(provider["environment"]))
+    if provider.get("git_branch"):
+        args.append(str(provider["git_branch"]))
+    names = _parse_vercel_env_ls(_run(args))
+    environment = provider.get("environment")
+    git_branch = provider.get("git_branch")
+    return [
+        ProviderSecret(
+            name,
+            provider_name,
+            "vercel",
+            {"environment": environment, "git_branch": git_branch, "readable": True},
+        )
+        for name in names
+    ]
+
+
 def _list_local_encrypted(provider_name: str, provider: dict[str, Any]) -> list[ProviderSecret]:
     return [ProviderSecret(name, provider_name, "local-encrypted", {"path": provider.get("path")}) for name in _decrypt_local(provider)]
 
@@ -257,6 +285,60 @@ def _read_env_values(path: Path) -> dict[str, str]:
         name, value = stripped.removeprefix("export ").split("=", 1)
         values[name.strip()] = value.strip().strip("'\"")
     return values
+
+
+def _pull_vercel_env(provider: dict[str, Any]) -> dict[str, str]:
+    with tempfile.TemporaryDirectory(prefix="agent-vars-vercel-") as directory:
+        env_path = Path(directory) / ".env.vercel"
+        args = _vercel_base_args(provider) + ["env", "pull", os.fspath(env_path), "--yes"]
+        if provider.get("environment"):
+            args.append(f"--environment={provider['environment']}")
+        if provider.get("git_branch"):
+            args.append(f"--git-branch={provider['git_branch']}")
+        _run(args)
+        return _read_env_values(env_path)
+
+
+def _vercel_base_args(provider: dict[str, Any]) -> list[str]:
+    args = [str(provider.get("executable", "vercel"))]
+    if provider.get("cwd"):
+        args += ["--cwd", str(provider["cwd"])]
+    if provider.get("scope"):
+        args += ["--scope", str(provider["scope"])]
+    if provider.get("team"):
+        args += ["--team", str(provider["team"])]
+    if provider.get("token"):
+        args += ["--token", str(provider["token"])]
+    args.append("--non-interactive")
+    return args
+
+
+def _parse_vercel_env_ls(output: str) -> list[str]:
+    stripped = output.strip()
+    if not stripped:
+        return []
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, list):
+        return sorted({str(item.get("name") or item.get("key")) for item in data if isinstance(item, dict) and (item.get("name") or item.get("key"))})
+    if isinstance(data, dict):
+        values = data.get("envs") or data.get("environmentVariables") or data.get("items") or data.get("variables")
+        if isinstance(values, list):
+            return sorted({str(item.get("name") or item.get("key")) for item in values if isinstance(item, dict) and (item.get("name") or item.get("key"))})
+
+    names: list[str] = []
+    for line in output.splitlines():
+        cleaned = line.strip().strip("│").strip()
+        if not cleaned or cleaned.startswith((">", "-", "─", "┌", "└", "├")):
+            continue
+        if re.search(r"\b(name|environments?|created|target|value)\b", cleaned, re.IGNORECASE):
+            continue
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\b", cleaned)
+        if match:
+            names.append(match.group(1))
+    return sorted(set(names))
 
 
 def _fixture_value(path: Path, secret_name: str) -> str:

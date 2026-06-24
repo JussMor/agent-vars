@@ -39,7 +39,7 @@ Milestones 1–7 in [PLAN.md](PLAN.md) are implemented and tested:
 - scalar `.env` rendering plus policy-constrained, tracked file-secret mounts and safe unmount lifecycle
 - scoped runtime registry with leases, replicas, TTL cleanup, tombstones, and dependency action queues
 - redacted provenance, `doctor`, `trace`, `events`, and value-safe `diff`
-- GCP, Cloudflare metadata, Doppler, Vault, AWS, Kubernetes, plaintext local, and age-encrypted local providers
+- GCP, Vercel, Cloudflare metadata, Doppler, Vault, AWS, Kubernetes, plaintext local, and age-encrypted local providers
 
 Milestone 8 governance—reviewer enforcement, public-secret leak policy, audit export, and CI status checks—is intentionally still pending. It is tracked separately and is not implied by the current CLI.
 
@@ -120,6 +120,11 @@ providers:
     project_id: company-prod
   doppler:
     kind: doppler
+    optional: true
+    phase: future
+  vercel-preview:
+    kind: vercel
+    environment: preview
     optional: true
     phase: future
 
@@ -649,7 +654,7 @@ python3 -m venv .venv
 
 ## Provider adapters and guided mapping
 
-The implementation includes provider-guided suggestions and a scoped runtime registry for preview values. Provider kinds are `gcp`, `cloudflare`, `doppler`, `vault`, `aws`, `kubernetes`, `local`, and `local-encrypted`. Cloudflare supports metadata discovery only because deployed Worker secret payloads are write-only.
+The implementation includes provider-guided suggestions and a scoped runtime registry for preview values. Provider kinds are `gcp`, `vercel`, `cloudflare`, `doppler`, `vault`, `aws`, `kubernetes`, `local`, and `local-encrypted`. Cloudflare supports metadata discovery only because deployed Worker secret payloads are write-only.
 
 ```yaml
 providers:
@@ -665,6 +670,11 @@ providers:
   cluster:
     kind: kubernetes
     namespace: platform
+  vercel-preview:
+    kind: vercel
+    environment: preview
+    git_branch: feature-x
+    team: platform-team
   encrypted-dev:
     kind: local-encrypted
     path: .secrets/dev.json.age
@@ -685,7 +695,7 @@ agent-vars --contract agent-vars.example.yaml doctor frontend --environment dev 
 agent-vars --contract agent-vars.example.yaml diff qa prod --service api-gateway --left-values qa-values.json --right-values prod-values.json
 ```
 
-Provider adapters use their standard CLIs: `gcloud`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
+Provider adapters use their standard CLIs: `gcloud`, `vercel`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. Vercel profiles use `vercel env ls` for names and `vercel env pull` into a temporary file for payload reads; set `environment` to `development`, `preview`, `production`, or a custom environment, and optionally set `git_branch`, `cwd`, `scope`, `team`, or `token`. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
 
 Suggestions are written to `.agent-vars/suggestions.json` with confidence, evidence, environment, and production impact. `approve` accepts high-confidence non-production mappings by default and writes approved sources to `.agent-vars/approvals.json`, which `validate`, `materialize`, and `doctor` consume automatically. Use `--bindings` to select another approval file. Low-confidence mappings require `--all`; production mappings independently require `--allow-production`. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads or alter the contract.
 

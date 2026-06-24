@@ -12,7 +12,7 @@ class ContractError(ValueError):
     """Raised when a contract cannot be loaded or validated."""
 
 
-PROVIDER_KINDS = {"gcp", "cloudflare", "doppler", "vault", "aws", "kubernetes", "local", "local-encrypted"}
+PROVIDER_KINDS = {"gcp", "cloudflare", "doppler", "vault", "aws", "kubernetes", "vercel", "local", "local-encrypted"}
 OUTPUT_TYPES = {"string", "url", "integer", "number", "boolean", "json"}
 
 
