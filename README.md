@@ -588,6 +588,8 @@ Environment name: pypi
 
 After that, publish a GitHub release for a new version and the workflow will upload the package. PyPI does not allow replacing an already-published version, so update `version` in `pyproject.toml` and `__version__` in `agent_vars/__init__.py` before each release.
 
+CI uploads are made unique automatically. The publish workflow rewrites the build-only package version to `<base>.post<N>` using the GitHub run number and retry attempt before building, so rerunning a release does not try to upload an already-existing wheel filename to PyPI.
+
 The wheel includes an agent instruction file at `agent_vars/SKILL.md`. Another agent can locate the installed file with:
 
 ```bash
