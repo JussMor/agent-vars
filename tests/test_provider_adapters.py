@@ -54,11 +54,12 @@ def test_vault_aws_and_kubernetes_payload_shapes(monkeypatch):
 
 
 def test_vercel_adapter_lists_and_pulls_env_values(monkeypatch):
+    providers._VERCEL_ENV_CACHE.clear()
     calls = []
 
-    def fake_run(args):
+    def fake_run(args, **kwargs):
         calls.append(args)
-        if args[:4] == ["vercel", "--non-interactive", "env", "ls"]:
+        if args[:3] == ["vercel", "env", "ls"]:
             return "API_TOKEN Encrypted Production\nNEXT_PUBLIC_URL Encrypted Preview\n"
         if "pull" in args:
             env_path = args[args.index("pull") + 1]
@@ -74,16 +75,40 @@ def test_vercel_adapter_lists_and_pulls_env_values(monkeypatch):
     assert [secret.name for secret in listed] == ["API_TOKEN", "NEXT_PUBLIC_URL"]
     assert listed[0].metadata == {"environment": "preview", "git_branch": "feature-x", "readable": True}
     assert get_secret("vercel-preview", provider, "API_TOKEN") == "vercel-secret"
-    assert calls[0] == ["vercel", "--non-interactive", "env", "ls", "preview", "feature-x"]
+    assert calls[0] == ["vercel", "env", "ls", "preview", "feature-x"]
     assert "--environment=preview" in calls[1]
     assert "--git-branch=feature-x" in calls[1]
     assert "--yes" in calls[1]
+    assert "--non-interactive" not in calls[0]
+    assert "--non-interactive" not in calls[1]
 
 
 def test_vercel_adapter_supports_json_list_output(monkeypatch):
     monkeypatch.setattr(providers, "_run", lambda args: '[{"name":"API_TOKEN"},{"key":"OTHER_TOKEN"}]')
     listed = list_secrets("vercel", {"kind": "vercel"})
     assert [secret.name for secret in listed] == ["API_TOKEN", "OTHER_TOKEN"]
+
+
+def test_vercel_adapter_pulls_once_per_process(monkeypatch):
+    providers._VERCEL_ENV_CACHE.clear()
+    pull_count = 0
+
+    def fake_run(args, **kwargs):
+        nonlocal pull_count
+        if "pull" in args:
+            pull_count += 1
+            env_path = args[args.index("pull") + 1]
+            with open(env_path, "w", encoding="utf-8") as handle:
+                handle.write("API_TOKEN=one\nOTHER_TOKEN=two\n")
+            return "Pulled env"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(providers, "_run", fake_run)
+    provider = {"kind": "vercel", "environment": "production"}
+
+    assert get_secret("vercel-production", provider, "API_TOKEN") == "one"
+    assert get_secret("vercel-production", provider, "OTHER_TOKEN") == "two"
+    assert pull_count == 1
 
 
 def test_encrypted_local_adapter_decrypts_json(monkeypatch):

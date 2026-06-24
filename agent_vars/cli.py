@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .contract import as_json, contract_summary, load_contract, materialize_service, validate_contract
 from .diagnostics import diagnose_service, diff_values, redact_event
-from .providers import list_secrets, suggest_bindings
+from .providers import clear_provider_caches, list_secrets, suggest_bindings
 from .registry import Registry, refresh_actions
 from .resolution import missing_required, resolve_service
 from .scanner import scan_repo, scan_workspace
@@ -180,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    clear_provider_caches()
     contract_path = Path(args.contract)
     try:
         if args.command == "skill":

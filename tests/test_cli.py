@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 
+from agent_vars import providers
 from agent_vars.cli import main
 from agent_vars.contract import load_contract
 
@@ -99,6 +100,47 @@ def test_materialize_resolves_active_provider_profile_without_mutating_provider(
         "API_TOKEN=provider-secret\n"
     )
     assert json.loads(provider_values.read_text(encoding="utf-8")) == {"API_TOKEN": "provider-secret"}
+
+
+def test_materialize_refreshes_vercel_provider_each_cli_invocation(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    pull_count = 0
+
+    def fake_run(args, **kwargs):
+        nonlocal pull_count
+        if "pull" not in args:
+            raise AssertionError(args)
+        pull_count += 1
+        env_path = args[args.index("pull") + 1]
+        with open(env_path, "w", encoding="utf-8") as handle:
+            handle.write(f"API_TOKEN=vercel-secret-{pull_count}\n")
+        return "Pulled env"
+
+    monkeypatch.setattr(providers, "_run", fake_run)
+    contract = {
+        "version": 1,
+        "project": "demo",
+        "environments": {"production": {"provider_profile": "vercel-production"}},
+        "providers": {"vercel-production": {"kind": "vercel", "environment": "production"}},
+        "services": {
+            "web": {
+                "root": ".",
+                "env_files": [".env.local.example"],
+                "requires": [{"name": "API_TOKEN", "source": "API_TOKEN", "visibility": "secret", "phase": "runtime", "required": True}],
+            },
+        },
+    }
+    contract_path = tmp_path / "agent-vars.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    assert main(["--contract", str(contract_path), "materialize", "web", "--environment", "production", "--strict"]) == 0
+    assert capsys.readouterr().out == ""
+    assert "API_TOKEN=vercel-secret-1" in (tmp_path / ".env.local").read_text(encoding="utf-8")
+
+    assert main(["--contract", str(contract_path), "materialize", "web", "--environment", "production", "--strict"]) == 0
+    assert capsys.readouterr().out == ""
+    assert "API_TOKEN=vercel-secret-2" in (tmp_path / ".env.local").read_text(encoding="utf-8")
+    assert pull_count == 2
 
 
 def test_strict_materialize_fails_for_missing_required_values(tmp_path, monkeypatch, capsys):
