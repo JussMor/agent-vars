@@ -542,6 +542,7 @@ For local development, install it in editable mode:
 python3 -m venv .venv
 .venv/bin/pip install -e .
 
+.venv/bin/agent-vars skill
 .venv/bin/agent-vars --contract agent-vars.example.yaml scan
 .venv/bin/agent-vars --contract agent-vars.example.yaml validate --environment dev --overlay preview
 .venv/bin/agent-vars --contract agent-vars.example.yaml materialize api-gateway --dry-run
@@ -592,7 +593,22 @@ The wheel includes an agent instruction file at `agent_vars/SKILL.md`. Another a
 python3 -c 'from importlib.resources import files; print(files("agent_vars").joinpath("SKILL.md"))'
 ```
 
+Or print the packaged instructions directly:
+
+```bash
+agent-vars skill
+```
+
 The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
+
+For normal local use, preview first and then write the service's default env target:
+
+```bash
+agent-vars --contract agent-vars.yaml materialize web --environment dev --dry-run
+agent-vars --contract agent-vars.yaml materialize web --environment dev
+```
+
+If the service declares `.env.local.example`, the default write target is `.env.local`; if it declares `services/api/.env.example`, the target is `services/api/.env`. Use `--out` when you want an explicit path.
 
 Resolve actual values and fail when required values are missing:
 
