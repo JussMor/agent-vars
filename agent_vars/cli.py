@@ -58,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--mount-root", help="Materialize declared file mounts beneath this root")
     materialize.add_argument("--mount-manifest", help="Mount lifecycle manifest; defaults beneath --mount-root")
     materialize.add_argument("--bindings", default=str(DEFAULT_STATE_DIR / "approvals.json"), help="Approved binding state")
+    materialize.add_argument("--report", help="Write a JSON materialization report without revealing values")
 
     unmount = sub.add_parser("unmount", help="Remove tracked file-secret mounts safely")
     unmount.add_argument("service", nargs="?", help="Only remove mounts for this service")
@@ -263,8 +264,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             service = (contract.get("services") or {}).get(args.service, {})
             missing = missing_required(service, preflight) if isinstance(service, dict) else []
+            output_path = Path(args.out) if args.out else _default_env_output(contract, args.service, args.environment, args.overlay)
+            if args.report:
+                _write_materialize_report(Path(args.report), contract, args.service, args.environment, args.overlay, output_path, service, preflight, missing)
             if args.strict and missing:
-                raise ValueError(f"missing required values: {', '.join(missing)}")
+                suffix = f"; report written to {args.report}" if args.report else ""
+                raise ValueError(f"missing required values: {', '.join(missing)}{suffix}")
             if args.mount_root and not args.dry_run:
                 if not args.environment:
                     raise ValueError("--environment is required with --mount-root")
@@ -290,10 +295,12 @@ def main(argv: list[str] | None = None) -> int:
                 verify_files=not args.dry_run,
             )
             missing = missing_required(service, resolved) if isinstance(service, dict) else []
+            if args.report:
+                _write_materialize_report(Path(args.report), contract, args.service, args.environment, args.overlay, output_path, service, resolved, missing)
             if args.strict and missing:
-                raise ValueError(f"missing or unverified required values: {', '.join(missing)}")
+                suffix = f"; report written to {args.report}" if args.report else ""
+                raise ValueError(f"missing or unverified required values: {', '.join(missing)}{suffix}")
             rendered = materialize_service(contract, args.service, resolved)
-            output_path = Path(args.out) if args.out else _default_env_output(contract, args.service, args.environment, args.overlay)
             if output_path and not args.dry_run:
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(rendered, encoding="utf-8")
@@ -441,6 +448,64 @@ def _default_env_output(contract: dict[str, object], service_name: str, environm
         return None
     selected = _select_env_file(env_files, environment, overlay)
     return Path(_env_template_target(selected))
+
+
+def _write_materialize_report(
+    path: Path,
+    contract: dict[str, object],
+    service_name: str,
+    environment: str | None,
+    overlay: str | None,
+    output_path: Path | None,
+    service: object,
+    resolved: dict[str, object],
+    missing: list[str],
+) -> None:
+    service_spec = service if isinstance(service, dict) else {}
+    requirements = [item for item in service_spec.get("requires", []) if isinstance(item, dict)]
+    environments = contract.get("environments", {})
+    env_spec = environments.get(environment) if environment and isinstance(environments, dict) else {}
+    provider_name = env_spec.get("provider_profile") if isinstance(env_spec, dict) else None
+    providers = contract.get("providers", {})
+    provider = providers.get(provider_name) if isinstance(providers, dict) and isinstance(provider_name, str) else None
+    provider_kind = provider.get("kind") if isinstance(provider, dict) else None
+    values = []
+    for req in requirements:
+        name = str(req.get("name", ""))
+        value = resolved.get(name)
+        status = getattr(value, "status", "missing")
+        values.append({
+            "name": name,
+            "source": req.get("source"),
+            "required": bool(req.get("required", True)),
+            "phase": req.get("phase"),
+            "visibility": req.get("visibility"),
+            "status": status,
+            "layer": getattr(value, "layer", None),
+            "provider": getattr(value, "provider", None),
+            "value_present": status == "resolved",
+            "error": getattr(value, "error", None),
+            "hint": getattr(value, "hint", None),
+        })
+    report = {
+        "service": service_name,
+        "environment": environment,
+        "overlay": overlay,
+        "output": str(output_path) if output_path else None,
+        "provider_profile": provider_name,
+        "provider_kind": provider_kind,
+        "required": sum(1 for item in requirements if item.get("required", True)),
+        "resolved": sum(1 for item in values if item["value_present"]),
+        "missing": missing,
+        "values": values,
+        "notes": [
+            "This report never includes secret values.",
+            "resources lists provider names/metadata only; materialize resolves values.",
+            "For Vercel, missing provider_secret values mean the variable was not returned by vercel env pull for the selected environment/git branch.",
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(as_json(report), encoding="utf-8")
 
 
 def _select_env_file(env_files: list[str], environment: str | None, overlay: str | None) -> str:

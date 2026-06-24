@@ -222,7 +222,20 @@ def _phase(name: str) -> str:
 
 
 def _required_by_default(name: str) -> bool:
-    return not name.endswith("_OPTIONAL")
+    optional_prefixes = ("E2E_", "PLAYWRIGHT_", "VERCEL_", "NEXT_PUBLIC_VERCEL_")
+    optional_names = {
+        "CI",
+        "LOG_LEVEL",
+        "NODE_ENV",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "USE_MOCK_TEAMS_DATA",
+    }
+    optional_contains = ("_OPTIONAL", "_MOCK_", "_FEATURE_", "_FLAG")
+    if name in optional_names or name.startswith(optional_prefixes):
+        return False
+    if name.startswith(("ENABLE_", "DISABLE_")):
+        return False
+    return not any(token in name for token in optional_contains)
 
 
 def _uncertain(services: dict[str, Any]) -> list[dict[str, str]]:

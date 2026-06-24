@@ -143,6 +143,47 @@ def test_materialize_refreshes_vercel_provider_each_cli_invocation(tmp_path, mon
     assert pull_count == 2
 
 
+def test_strict_materialize_writes_missing_value_report(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    provider_values = tmp_path / "provider.json"
+    provider_values.write_text('{"API_TOKEN":"secret-value"}', encoding="utf-8")
+    contract = {
+        "version": 1,
+        "project": "demo",
+        "environments": {"production": {"provider_profile": "vercel-production"}},
+        "providers": {"vercel-production": {"kind": "vercel", "fixture": str(provider_values)}},
+        "services": {
+            "web": {
+                "root": ".",
+                "env_files": [".env.local.example"],
+                "requires": [
+                    {"name": "API_TOKEN", "source": "API_TOKEN", "visibility": "secret", "phase": "runtime", "required": True},
+                    {"name": "E2E_PASSWORD", "source": "E2E_PASSWORD", "visibility": "secret", "phase": "runtime", "required": True},
+                ],
+            },
+        },
+    }
+    contract_path = tmp_path / "agent-vars.json"
+    report_path = tmp_path / "materialize-report.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    result = main([
+        "--contract", str(contract_path), "materialize", "web",
+        "--environment", "production", "--strict", "--report", str(report_path),
+    ])
+
+    assert result == 2
+    assert "report written" in capsys.readouterr().err
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["provider_profile"] == "vercel-production"
+    assert report["provider_kind"] == "vercel"
+    assert report["missing"] == ["E2E_PASSWORD"]
+    assert next(item for item in report["values"] if item["name"] == "API_TOKEN")["value_present"] is True
+    missing = next(item for item in report["values"] if item["name"] == "E2E_PASSWORD")
+    assert missing["value_present"] is False
+    assert "secret-value" not in json.dumps(report)
+
+
 def test_strict_materialize_fails_for_missing_required_values(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     result = main([

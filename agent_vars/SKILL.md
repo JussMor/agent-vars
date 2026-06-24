@@ -40,6 +40,7 @@ agent-vars scan --discover --repo . --out agent-vars.yaml
 agent-vars --contract agent-vars.yaml scan
 agent-vars --contract agent-vars.yaml validate --environment dev
 agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev --dry-run
+agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev --strict --report materialize-report.json
 ```
 
 When `materialize` runs without `--dry-run` and without `--out`, Agent Vars writes to the service's declared `env_files` target when one exists. Template names such as `.env.local.example` are written as `.env.local`; otherwise use `--out` for an explicit target.
@@ -52,6 +53,8 @@ When `materialize` runs without `--dry-run` and without `--out`, Agent Vars writ
 
 Generated requirements should be immediately testable. Prefer `source: VARIABLE_NAME` for discovered env vars so `--values`, process environment values, and the active environment provider profile can resolve them. Keep `uncertain_mappings` as the human review queue for provider mapping and required/optional policy.
 
+Generated contracts mark stable application dependencies as required by default. Common CI, E2E, Vercel metadata, local runtime metadata, and feature-toggle variables are optional by default. If a generated contract from an older Agent Vars release marks those local-only variables required, update the contract before using `--strict`.
+
 ## Env Materialization Flow
 
 1. Run `agent-vars scan --discover --repo . --out agent-vars.yaml`.
@@ -59,9 +62,9 @@ Generated requirements should be immediately testable. Prefer `source: VARIABLE_
 3. Run `agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev --dry-run`.
 4. Add a local `values.json` or configure `environments.dev.provider_profile` when required values are missing.
 5. Run `agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev` to write the inferred env file, or pass `--out` for an explicit target.
-6. Use `--strict` in CI or local setup scripts when missing values should fail the command.
+6. Use `--strict` in CI or local setup scripts when missing values should fail the command. Add `--report materialize-report.json` when debugging; the report contains status, layer, provider, and hints but never resolved secret payloads.
 
-For provider-backed envs, `resources` lists provider variable names and metadata only. It does not refresh local `.env` values. `materialize` resolves values through the active provider profile and writes the local env file. Vercel profiles use `vercel env pull` into a temporary file, reuse that pull in memory for the current command, and pull again on the next command so local env files refresh from the current Vercel state.
+For provider-backed envs, `resources` lists provider variable names and metadata only. It does not refresh local `.env` values. `materialize` resolves values through the active provider profile and writes the local env file. Vercel profiles use `vercel env ls` for names and `vercel env pull` into a temporary file for payloads. If a Vercel variable appears in `resources` but `materialize --report` marks it missing, the selected `vercel env pull` output for that environment and git branch did not include the value. Vercel pulls are reused in memory for the current command and pulled again on the next command so local env files refresh from the current Vercel state.
 
 ## Safety
 
