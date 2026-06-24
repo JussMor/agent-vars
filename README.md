@@ -262,7 +262,7 @@ Do not copy the example literally. The example demonstrates the schema shape. A 
 
 Then it should generate a draft contract and report uncertain mappings for human review.
 
-Discovered variables are promoted into `services.<name>.requires` for the nearest package or service root. In a monolith, the root service uses `root: "."`; in a monorepo, each nearest package or service root gets its own service; in a multi-repo workspace, services are repository-qualified. The generated source defaults to the variable name itself, so `materialize --values values.json`, process environment values, and an environment `provider_profile` can resolve values immediately while provider mappings are still being reviewed. The `uncertain_mappings` section remains as a review queue rather than blocking dry-runs or local fixtures.
+Discovered variables are promoted into `services.<name>.requires` for the nearest package or service root. In a monolith, the root service uses `root: "."`; in a monorepo, each nearest package or service root gets its own service; in a multi-repo workspace, services are repository-qualified. The generated source defaults to the variable name itself, so `materialize --values values.json`, process environment values, and an environment `provider_profile` can resolve values immediately while provider mappings are still being reviewed. Common CI, E2E, local runtime metadata, Vercel metadata, and feature-toggle names are marked optional by default; stable application dependencies such as database URLs and auth secrets remain required. The `uncertain_mappings` section remains as a review queue rather than blocking dry-runs or local fixtures.
 
 The scanner supports coordinated multi-repository profiles by repeating `--repo`:
 
@@ -629,6 +629,16 @@ agent-vars --contract agent-vars.example.yaml materialize api-gateway \
   --environment dev --overlay preview --values values.json --strict --dry-run
 ```
 
+When strict materialization fails, write a no-secret report to see which source was checked and why each variable did or did not resolve:
+
+```bash
+agent-vars --contract agent-vars.yaml materialize clinician-app \
+  --environment production --out .env.local --strict \
+  --report materialize-report.json
+```
+
+The report includes service, environment, provider profile, provider kind, status, layer, hints, and missing names. It never includes resolved secret payloads. Use it when a provider appears to have a variable name but the generated `.env` stays stale or incomplete.
+
 The values file uses the documented precedence layers. Values may be global or nested under a service name:
 
 ```json
@@ -717,7 +727,7 @@ agent-vars --contract agent-vars.example.yaml doctor frontend --environment dev 
 agent-vars --contract agent-vars.example.yaml diff qa prod --service api-gateway --left-values qa-values.json --right-values prod-values.json
 ```
 
-Provider adapters use their standard CLIs: `gcloud`, `vercel`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. Vercel profiles use `vercel env ls` for names and `vercel env pull` into a temporary file for payload reads; set `environment` to `development`, `preview`, `production`, or a custom environment, and optionally set `git_branch`, `cwd`, `scope`, `team`, `token`, or `timeout_seconds`. Agent Vars does not call `vercel env add`, `vercel env update`, or `vercel env rm`. During one materialization command, Vercel values are pulled once and reused in memory for every required variable; the next command pulls again so local env files refresh from the current Vercel state. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
+Provider adapters use their standard CLIs: `gcloud`, `vercel`, `wrangler`, `doppler`, `vault`, `aws`, `kubectl`, and `age`. A provider profile can set `executable` to override the binary. Vercel profiles use `vercel env ls` for names and `vercel env pull` into a temporary file for payload reads; set `environment` to `development`, `preview`, `production`, or a custom environment, and optionally set `git_branch`, `cwd`, `scope`, `team`, `token`, or `timeout_seconds`. `resources` and `vercel env ls` prove that names/metadata exist, not that Agent Vars received payloads for the selected environment and branch. If `materialize --report` marks a Vercel variable missing, the selected `vercel env pull` result did not include that value, even if the name appears elsewhere in Vercel. Agent Vars does not call `vercel env add`, `vercel env update`, or `vercel env rm`. During one materialization command, Vercel values are pulled once and reused in memory for every required variable; the next command pulls again so local env files refresh from the current Vercel state. GCP and Doppler retain their environment-variable fixtures; every provider also accepts a JSON-object `fixture` path in its contract profile for deterministic tests. Payloads are consumed in memory and are not written to suggestion, approval, or sync state.
 
 Suggestions are written to `.agent-vars/suggestions.json` with confidence, evidence, environment, and production impact. `approve` accepts high-confidence non-production mappings by default and writes approved sources to `.agent-vars/approvals.json`, which `validate`, `materialize`, and `doctor` consume automatically. Use `--bindings` to select another approval file. Low-confidence mappings require `--all`; production mappings independently require `--allow-production`. `sync` writes provider resource metadata and binding availability to `.agent-vars/sync-<provider>.json`; it does not persist secret payloads or alter the contract.
 

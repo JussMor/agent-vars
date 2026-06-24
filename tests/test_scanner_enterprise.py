@@ -93,6 +93,40 @@ def test_scanner_supports_single_monolith_without_package_boundaries(tmp_path):
     assert "FEATURE_FLAG=${FEATURE_FLAG}" in rendered
 
 
+def test_scanner_marks_ci_e2e_vercel_and_toggle_variables_optional(tmp_path):
+    (tmp_path / ".env.example").write_text(
+        "\n".join([
+            "DATABASE_URL=",
+            "AUTH0_CLIENT_SECRET=",
+            "CI=",
+            "E2E_PASSWORD=",
+            "ENABLE_PAYMENT_FEATURES=",
+            "PLAYWRIGHT_BASE_URL=",
+            "NODE_ENV=",
+            "NEXT_PUBLIC_VERCEL_ENV=",
+            "FEATURE_FLAG=",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    profile = scan_repo(tmp_path)
+
+    requirements = {item["name"]: item for item in profile["services"][tmp_path.name]["requires"]}
+    for name in (
+        "CI",
+        "E2E_PASSWORD",
+        "ENABLE_PAYMENT_FEATURES",
+        "PLAYWRIGHT_BASE_URL",
+        "NODE_ENV",
+        "NEXT_PUBLIC_VERCEL_ENV",
+        "FEATURE_FLAG",
+    ):
+        assert requirements[name]["required"] is False
+    assert requirements["DATABASE_URL"]["required"] is True
+    assert requirements["AUTH0_CLIENT_SECRET"]["required"] is True
+
+
 def test_scanner_promotes_root_next_app_env_evidence_to_service_requirements(tmp_path):
     (tmp_path / "package.json").write_text('{"name":"everbetter-pro","dependencies":{"next":"latest"}}', encoding="utf-8")
     (tmp_path / ".env.local.example").write_text(
