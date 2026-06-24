@@ -535,6 +535,8 @@ agent-vars doctor frontend --environment dev --overlay preview --sandbox workspa
 
 Agent Vars is an installable Python CLI for scanning, validating, resolving, materializing, publishing, and debugging repository configuration.
 
+For local development, install it in editable mode:
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
@@ -542,6 +544,51 @@ python3 -m venv .venv
 .venv/bin/agent-vars --contract agent-vars.example.yaml scan
 .venv/bin/agent-vars --contract agent-vars.example.yaml validate --environment dev --overlay preview
 .venv/bin/agent-vars --contract agent-vars.example.yaml materialize api-gateway --dry-run
+```
+
+To build a wheel and install it as a normal command on your computer:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[publish]'
+.venv/bin/python -m build
+
+python3 -m pip install --user --force-reinstall dist/agent_vars-0.1.0-py3-none-any.whl
+agent-vars --help
+```
+
+If you use `pipx` for command-line tools, install the built wheel with:
+
+```bash
+pipx install --force dist/agent_vars-0.1.0-py3-none-any.whl
+agent-vars --help
+```
+
+To upload the package to a Python package index, configure an API token for that index and run:
+
+```bash
+.venv/bin/python -m twine check dist/*
+.venv/bin/python -m twine upload dist/*
+```
+
+GitHub Actions can build and publish the package for you when you publish a GitHub release. This repo includes `.github/workflows/publish-python.yml`, which runs tests, builds the distributions, validates them, and uploads them to PyPI using Trusted Publishing.
+
+Configure PyPI once with a pending or existing Trusted Publisher:
+
+```text
+PyPI project: agent-vars
+Owner: JussMor
+Repository name: agent-vars
+Workflow name: publish-python.yml
+Environment name: pypi
+```
+
+After that, publish a GitHub release for a new version and the workflow will upload the package. PyPI does not allow replacing an already-published version, so update `version` in `pyproject.toml` and `__version__` in `agent_vars/__init__.py` before each release.
+
+The wheel includes an agent instruction file at `agent_vars/SKILL.md`. Another agent can locate the installed file with:
+
+```bash
+python3 -c 'from importlib.resources import files; print(files("agent_vars").joinpath("SKILL.md"))'
 ```
 
 The materializer writes file-secret pointer variables such as `GOOGLE_APPLICATION_CREDENTIALS` to the declared mount path instead of serializing JSON credentials into generated `.env` files.
