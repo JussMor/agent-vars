@@ -33,6 +33,13 @@ elif args[:3] == ["secrets", "versions", "access"]:
     print("gcp-secret")
 elif args[:2] == ["secrets", "download"]:
     print(json.dumps({"API_TOKEN": "doppler-secret"}))
+elif args[:2] == ["env", "ls"] or args[:3] == ["--non-interactive", "env", "ls"]:
+    print("API_TOKEN Encrypted Production")
+elif "env" in args and "pull" in args:
+    env_path = args[args.index("pull") + 1]
+    with open(env_path, "w", encoding="utf-8") as handle:
+        handle.write("API_TOKEN=vercel-secret\n")
+    print("Pulled env")
 else:
     print("unsupported emulator command", file=sys.stderr)
     raise SystemExit(2)
@@ -52,6 +59,7 @@ def test_provider_adapters_execute_cli_protocols_end_to_end(tmp_path):
     encrypted = {"kind": "local-encrypted", "executable": binary, "path": "dev.json.age"}
     gcp = {"kind": "gcp", "executable": binary, "project_id": "test"}
     doppler = {"kind": "doppler", "executable": binary}
+    vercel = {"kind": "vercel", "executable": binary, "environment": "production"}
 
     assert list_secrets("cf", cloudflare)[0].name == "API_TOKEN"
     assert list_secrets("vault", vault)[0].name == "API_TOKEN"
@@ -66,3 +74,5 @@ def test_provider_adapters_execute_cli_protocols_end_to_end(tmp_path):
     assert get_secret("gcp", gcp, "API_TOKEN").strip() == "gcp-secret"
     assert list_secrets("doppler", doppler)[0].name == "API_TOKEN"
     assert get_secret("doppler", doppler, "API_TOKEN") == "doppler-secret"
+    assert list_secrets("vercel", vercel)[0].name == "API_TOKEN"
+    assert get_secret("vercel", vercel, "API_TOKEN") == "vercel-secret"

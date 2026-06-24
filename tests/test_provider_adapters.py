@@ -10,7 +10,7 @@ from agent_vars.providers import ProviderError, get_secret, list_secrets
 from agent_vars.workflow import approve_suggestions, write_state
 
 
-@pytest.mark.parametrize("kind", ["gcp", "cloudflare", "doppler", "vault", "aws", "kubernetes", "local", "local-encrypted"])
+@pytest.mark.parametrize("kind", ["gcp", "cloudflare", "doppler", "vault", "aws", "kubernetes", "vercel", "local", "local-encrypted"])
 def test_all_provider_kinds_support_deterministic_fixtures(tmp_path, kind):
     fixture = tmp_path / f"{kind}.json"
     fixture.write_text('{"API_TOKEN":"secret"}', encoding="utf-8")
@@ -51,6 +51,39 @@ def test_vault_aws_and_kubernetes_payload_shapes(monkeypatch):
     assert get_secret("aws", {"kind": "aws"}, "API_TOKEN") == "aws-secret"
     assert list_secrets("k8s", {"kind": "kubernetes", "namespace": "apps"})[0].metadata["namespace"] == "apps"
     assert get_secret("k8s", {"kind": "kubernetes", "namespace": "apps"}, "API_TOKEN") == "k8s-secret"
+
+
+def test_vercel_adapter_lists_and_pulls_env_values(monkeypatch):
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        if args[:4] == ["vercel", "--non-interactive", "env", "ls"]:
+            return "API_TOKEN Encrypted Production\nNEXT_PUBLIC_URL Encrypted Preview\n"
+        if "pull" in args:
+            env_path = args[args.index("pull") + 1]
+            with open(env_path, "w", encoding="utf-8") as handle:
+                handle.write("API_TOKEN=vercel-secret\nNEXT_PUBLIC_URL=https://example.test\n")
+            return "Pulled env"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(providers, "_run", fake_run)
+    provider = {"kind": "vercel", "environment": "preview", "git_branch": "feature-x"}
+
+    listed = list_secrets("vercel-preview", provider)
+    assert [secret.name for secret in listed] == ["API_TOKEN", "NEXT_PUBLIC_URL"]
+    assert listed[0].metadata == {"environment": "preview", "git_branch": "feature-x", "readable": True}
+    assert get_secret("vercel-preview", provider, "API_TOKEN") == "vercel-secret"
+    assert calls[0] == ["vercel", "--non-interactive", "env", "ls", "preview", "feature-x"]
+    assert "--environment=preview" in calls[1]
+    assert "--git-branch=feature-x" in calls[1]
+    assert "--yes" in calls[1]
+
+
+def test_vercel_adapter_supports_json_list_output(monkeypatch):
+    monkeypatch.setattr(providers, "_run", lambda args: '[{"name":"API_TOKEN"},{"key":"OTHER_TOKEN"}]')
+    listed = list_secrets("vercel", {"kind": "vercel"})
+    assert [secret.name for secret in listed] == ["API_TOKEN", "OTHER_TOKEN"]
 
 
 def test_encrypted_local_adapter_decrypts_json(monkeypatch):

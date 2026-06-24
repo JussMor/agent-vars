@@ -73,6 +73,11 @@ providers:
     kind: doppler
     optional: true
     phase: future
+  vercel-preview:
+    kind: vercel
+    environment: preview
+    optional: true
+    phase: future
 
 runtime_dependencies:
   nats:
