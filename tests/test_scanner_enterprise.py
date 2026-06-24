@@ -66,6 +66,33 @@ def test_scanner_coordinates_multiple_repositories(tmp_path):
     assert {item["repository"] for item in workspace["uncertain_mappings"]} == {"frontend", "api"}
 
 
+def test_scanner_supports_single_monolith_without_package_boundaries(tmp_path):
+    (tmp_path / ".env.example").write_text("DATABASE_URL=\nAPI_TOKEN=\nPUBLIC_BASE_URL=\n", encoding="utf-8")
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "settings.py").write_text(
+        "import os\nDATABASE_URL = os.getenv('DATABASE_URL')\nFEATURE_FLAG = os.environ.get('FEATURE_FLAG')\n",
+        encoding="utf-8",
+    )
+
+    profile = scan_repo(tmp_path)
+
+    assert profile["repo"]["topology"] == "single"
+    assert list(profile["services"]) == [tmp_path.name]
+    service = profile["services"][tmp_path.name]
+    assert service["root"] == "."
+    assert service["env_files"] == [".env.example"]
+    requirements = {item["name"]: item for item in service["requires"]}
+    assert set(requirements) == {"API_TOKEN", "DATABASE_URL", "FEATURE_FLAG", "PUBLIC_BASE_URL"}
+    assert requirements["API_TOKEN"]["visibility"] == "secret"
+    assert requirements["PUBLIC_BASE_URL"]["phase"] == "build"
+    assert validate_contract(profile) == []
+    rendered = materialize_service(profile, tmp_path.name)
+    assert "DATABASE_URL=${DATABASE_URL}" in rendered
+    assert "FEATURE_FLAG=${FEATURE_FLAG}" in rendered
+
+
 def test_scanner_promotes_root_next_app_env_evidence_to_service_requirements(tmp_path):
     (tmp_path / "package.json").write_text('{"name":"everbetter-pro","dependencies":{"next":"latest"}}', encoding="utf-8")
     (tmp_path / ".env.local.example").write_text(

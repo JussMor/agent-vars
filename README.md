@@ -244,6 +244,7 @@ Do not copy the example literally. The example demonstrates the schema shape. A 
 `agent-vars scan` should inspect:
 
 - service roots and monorepo layout
+- monolith repositories with one root service
 - root-level applications as services, even when another subservice is present
 - frontend framework and public env naming conventions
 - `.env*` files and `.env.example` templates
@@ -256,7 +257,7 @@ Do not copy the example literally. The example demonstrates the schema shape. A 
 
 Then it should generate a draft contract and report uncertain mappings for human review.
 
-Discovered variables are promoted into `services.<name>.requires` for the nearest package or service root. The generated source defaults to the variable name itself, so `materialize --values values.json`, process environment values, and an environment `provider_profile` can resolve values immediately while provider mappings are still being reviewed. The `uncertain_mappings` section remains as a review queue rather than blocking dry-runs or local fixtures.
+Discovered variables are promoted into `services.<name>.requires` for the nearest package or service root. In a monolith, the root service uses `root: "."`; in a monorepo, each nearest package or service root gets its own service; in a multi-repo workspace, services are repository-qualified. The generated source defaults to the variable name itself, so `materialize --values values.json`, process environment values, and an environment `provider_profile` can resolve values immediately while provider mappings are still being reviewed. The `uncertain_mappings` section remains as a review queue rather than blocking dry-runs or local fixtures.
 
 The scanner supports coordinated multi-repository profiles by repeating `--repo`:
 

@@ -109,11 +109,12 @@ def scan_workspace(roots: list[Path]) -> dict[str, Any]:
 def _discover_services(root: Path, env_files: list[str], dockerfiles: list[str], code_vars: dict[str, list[str]], env_file_vars: dict[str, list[str]], frameworks: dict[str, str]) -> dict[str, Any]:
     package_roots = _package_roots(root)
     evidence_paths = sorted(set(env_files) | set(dockerfiles) | set(code_vars) | set(env_file_vars))
+    root_monolith = not package_roots and any(Path(path).parent == Path(".") for path in [*env_files, *dockerfiles])
     assigned: dict[Path, set[str]] = {}
     env_files_by_root: dict[Path, list[str]] = {}
 
     for relative in evidence_paths:
-        service_root = _nearest_service_root(Path(relative), package_roots)
+        service_root = Path(".") if root_monolith else _nearest_service_root(Path(relative), package_roots)
         assigned.setdefault(service_root, set())
         if relative in code_vars:
             assigned[service_root].update(code_vars[relative])

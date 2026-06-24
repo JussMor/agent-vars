@@ -36,12 +36,30 @@ Use the installed `agent-vars` command:
 ```bash
 agent-vars --help
 agent-vars skill
+agent-vars scan --discover --repo . --out agent-vars.yaml
 agent-vars --contract agent-vars.yaml scan
 agent-vars --contract agent-vars.yaml validate --environment dev
 agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev --dry-run
 ```
 
 When `materialize` runs without `--dry-run` and without `--out`, Agent Vars writes to the service's declared `env_files` target when one exists. Template names such as `.env.local.example` are written as `.env.local`; otherwise use `--out` for an explicit target.
+
+## Repository Shapes
+
+- Monolith: expect one root service with `root: "."`. Promote root `.env*` templates, Dockerfile evidence, and code env references into that service's `requires`.
+- Monorepo: expect one service per nearest package or service root, such as `apps/web`, `apps/api`, `services/catalog`, or a root app plus subservices. Do not create an empty root workspace service when the root only groups child packages.
+- Multi-repo workspace: scan with repeated `--repo` flags and expect repository-qualified services such as `frontend:web` or `api:api`.
+
+Generated requirements should be immediately testable. Prefer `source: VARIABLE_NAME` for discovered env vars so `--values`, process environment values, and the active environment provider profile can resolve them. Keep `uncertain_mappings` as the human review queue for provider mapping and required/optional policy.
+
+## Env Materialization Flow
+
+1. Run `agent-vars scan --discover --repo . --out agent-vars.yaml`.
+2. Review generated services and `requires`.
+3. Run `agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev --dry-run`.
+4. Add a local `values.json` or configure `environments.dev.provider_profile` when required values are missing.
+5. Run `agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev` to write the inferred env file, or pass `--out` for an explicit target.
+6. Use `--strict` in CI or local setup scripts when missing values should fail the command.
 
 ## Safety
 
