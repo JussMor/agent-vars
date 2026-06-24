@@ -61,6 +61,8 @@ Generated requirements should be immediately testable. Prefer `source: VARIABLE_
 5. Run `agent-vars --contract agent-vars.yaml materialize SERVICE --environment dev` to write the inferred env file, or pass `--out` for an explicit target.
 6. Use `--strict` in CI or local setup scripts when missing values should fail the command.
 
+For provider-backed envs, `resources` lists provider variable names and metadata only. It does not refresh local `.env` values. `materialize` resolves values through the active provider profile and writes the local env file. Vercel profiles use `vercel env pull` into a temporary file, reuse that pull in memory for the current command, and pull again on the next command so local env files refresh from the current Vercel state.
+
 ## Safety
 
 - Do not print or store secret values unless the user explicitly asks for revealed output in a private terminal.
@@ -68,6 +70,7 @@ Generated requirements should be immediately testable. Prefer `source: VARIABLE_
 - Generated preview or sandbox values should be published to the Agent Vars runtime registry, not written into shared secret managers.
 - File secrets should be materialized with `--mount-root` and cleaned up with `unmount`.
 - Providers remain the source of values. Agent Vars reads through provider adapters, resolves mappings, and writes local runtime `.env` or mounted files; it must not mutate provider secrets for generated sandbox or preview values.
+- Do not report that env files were updated from a provider unless `materialize` completed or you verified the target `.env` file contents changed. `resources` alone is not proof of materialized values.
 
 ## Development
 

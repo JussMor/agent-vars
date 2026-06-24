@@ -23,6 +23,13 @@ class ProviderError(RuntimeError):
     pass
 
 
+_VERCEL_ENV_CACHE: dict[str, dict[str, str]] = {}
+
+
+def clear_provider_caches() -> None:
+    _VERCEL_ENV_CACHE.clear()
+
+
 def list_secrets(provider_name: str, provider: dict[str, Any]) -> list[ProviderSecret]:
     kind = provider.get("kind")
     fixture = _provider_fixture(provider)
@@ -117,7 +124,7 @@ def get_secret(provider_name: str, provider: dict[str, Any], secret_name: str) -
             return base64.b64decode(next(iter(data.values()))).decode("utf-8")
         return json.dumps({name: base64.b64decode(value).decode("utf-8") for name, value in data.items()})
     if kind == "vercel":
-        values = _pull_vercel_env(provider)
+        values = _cached_vercel_env(provider)
         if secret_name not in values:
             raise ProviderError(f"Vercel environment variable not found: {secret_name}")
         return values[secret_name]
@@ -295,8 +302,20 @@ def _pull_vercel_env(provider: dict[str, Any]) -> dict[str, str]:
             args.append(f"--environment={provider['environment']}")
         if provider.get("git_branch"):
             args.append(f"--git-branch={provider['git_branch']}")
-        _run(args)
+        _run(args, timeout=_provider_timeout(provider))
         return _read_env_values(env_path)
+
+
+def _cached_vercel_env(provider: dict[str, Any]) -> dict[str, str]:
+    key = _vercel_cache_key(provider)
+    if key not in _VERCEL_ENV_CACHE:
+        _VERCEL_ENV_CACHE[key] = _pull_vercel_env(provider)
+    return _VERCEL_ENV_CACHE[key]
+
+
+def _vercel_cache_key(provider: dict[str, Any]) -> str:
+    keys = ("executable", "cwd", "scope", "team", "token", "environment", "git_branch")
+    return json.dumps({key: provider.get(key) for key in keys if provider.get(key) is not None}, sort_keys=True)
 
 
 def _vercel_base_args(provider: dict[str, Any]) -> list[str]:
@@ -309,7 +328,6 @@ def _vercel_base_args(provider: dict[str, Any]) -> list[str]:
         args += ["--team", str(provider["team"])]
     if provider.get("token"):
         args += ["--token", str(provider["token"])]
-    args.append("--non-interactive")
     return args
 
 
@@ -379,11 +397,21 @@ def _decrypt_local(provider: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-def _run(args: list[str]) -> str:
+def _provider_timeout(provider: dict[str, Any]) -> float:
     try:
-        result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        return float(provider.get("timeout_seconds", 60))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _run(args: list[str], *, timeout: float | None = 60) -> str:
+    try:
+        result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout)
     except OSError as exc:
         raise ProviderError(f"provider executable not available: {args[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        timeout_label = f"{timeout:g}s" if isinstance(timeout, (int, float)) else "the configured timeout"
+        raise ProviderError(f"provider command timed out after {timeout_label}: {' '.join(args[:3])}") from exc
     if result.returncode != 0:
         raise ProviderError(result.stderr.strip() or f"provider command failed: {' '.join(args[:3])}")
     return result.stdout
